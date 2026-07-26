@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth-context"
 import { apiFetch } from "@/lib/api"
 import { useTriggerRefresh } from "@/lib/refresh-context"
-import { useAppVersion, useChannels } from "@/lib/queries"
+import { useAccounts, useAppVersion } from "@/lib/queries"
 import type { AppVersion } from "@/lib/api-types"
 import { relativeTime } from "@/lib/format"
 import { toast } from "sonner"
@@ -22,7 +22,7 @@ export function MonitorHeader() {
   const { theme, setTheme } = useTheme()
   const { username, authDisabled, logout } = useAuth()
   const refresh = useTriggerRefresh()
-  const channels = useChannels()
+  const accounts = useAccounts()
   const appVersion = useAppVersion()
   const [mounted, setMounted] = useState(false)
   const [syncing, setSyncing] = useState(false)
@@ -41,11 +41,11 @@ export function MonitorHeader() {
   }, [appTitle])
 
   /**
-   * 找出所有渠道中最近一次采集时间——这是"上次采集"展示的依据，
+   * 找出所有账号中最近一次采集时间——这是"上次采集"展示的依据，
    * 让用户知道页面上的余额到底是多新的快照（区别于"我刚点了刷新"）。
    */
   const lastCollectedAt = useMemo(() => {
-    const list = channels.data ?? []
+    const list = accounts.data ?? []
     let best: string | null = null
     let bestT = -Infinity
     for (const c of list) {
@@ -57,7 +57,7 @@ export function MonitorHeader() {
       }
     }
     return best
-  }, [channels.data])
+  }, [accounts.data])
 
   function handleRefresh() {
     setSyncing(true)
@@ -144,7 +144,7 @@ export function MonitorHeader() {
               <TooltipContent side="bottom" className="max-w-xs text-xs">
                 <p>{"重新拉取最新的快照数据。"}</p>
                 <p className="mt-1 text-muted-foreground">
-                  {"提示：实际采集由后台定时任务执行，如需立即采集请到具体渠道点 \"同步\"。"}
+                  {"提示：实际采集由后台定时任务执行，如需立即采集请在具体账号上执行同步。"}
                 </p>
               </TooltipContent>
             </Tooltip>

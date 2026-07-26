@@ -50,8 +50,8 @@ func TestLoginAddsExtraParams(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	session, err := c.Login(context.Background(), &connector.Channel{
-		SiteURL:          srv.URL,
+	session, err := c.Login(context.Background(), &connector.AccountTarget{
+		BaseURL:          srv.URL,
 		Username:         "u",
 		Password:         "p",
 		LoginExtraParams: map[string]any{"device_id": "d1"},
@@ -83,7 +83,7 @@ func TestRefreshSession(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	session, err := c.RefreshSession(context.Background(), &connector.Channel{SiteURL: srv.URL}, &connector.AuthSession{RefreshToken: "old-refresh"})
+	session, err := c.RefreshSession(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, &connector.AuthSession{RefreshToken: "old-refresh"})
 	if err != nil {
 		t.Fatalf("RefreshSession: %v", err)
 	}
@@ -107,8 +107,8 @@ func TestGetCosts(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	res, err := c.GetCosts(context.Background(), &connector.Channel{
-		SiteURL: srv.URL,
+	res, err := c.GetCosts(context.Background(), &connector.AccountTarget{
+		BaseURL: srv.URL,
 	}, &connector.AuthSession{
 		AccessToken: "token",
 	})
@@ -135,8 +135,8 @@ func TestGetCostsAppliesUpstreamRechargeMultiplier(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	res, err := c.GetCosts(context.Background(), &connector.Channel{
-		SiteURL:                srv.URL,
+	res, err := c.GetCosts(context.Background(), &connector.AccountTarget{
+		BaseURL:                srv.URL,
 		RechargeMultiplierMode: connector.RechargeMultiplierModeDivide,
 	}, &connector.AuthSession{
 		AccessToken: "token",
@@ -162,8 +162,8 @@ func TestGetBalanceAppliesManualRechargeMultiplier(t *testing.T) {
 
 	c := New()
 	multiplier := 3.0
-	res, err := c.GetBalance(context.Background(), &connector.Channel{
-		SiteURL:                srv.URL,
+	res, err := c.GetBalance(context.Background(), &connector.AccountTarget{
+		BaseURL:                srv.URL,
 		RechargeMultiplier:     &multiplier,
 		RechargeMultiplierMode: connector.RechargeMultiplierModeMultiply,
 	}, &connector.AuthSession{
@@ -186,8 +186,8 @@ func TestGetRechargeInfo(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	info, err := c.GetRechargeInfo(context.Background(), &connector.Channel{
-		SiteURL: srv.URL,
+	info, err := c.GetRechargeInfo(context.Background(), &connector.AccountTarget{
+		BaseURL: srv.URL,
 	}, &connector.AuthSession{AccessToken: "token"})
 	if err != nil {
 		t.Fatalf("GetRechargeInfo: %v", err)
@@ -212,8 +212,8 @@ func TestGetRechargeInfoFiltersUnavailable(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	info, err := c.GetRechargeInfo(context.Background(), &connector.Channel{
-		SiteURL: srv.URL,
+	info, err := c.GetRechargeInfo(context.Background(), &connector.AccountTarget{
+		BaseURL: srv.URL,
 	}, &connector.AuthSession{AccessToken: "token"})
 	if err != nil {
 		t.Fatalf("GetRechargeInfo: %v", err)
@@ -232,8 +232,8 @@ func TestGetRechargeInfoFallsBackToAvailableAlias(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	info, err := c.GetRechargeInfo(context.Background(), &connector.Channel{
-		SiteURL: srv.URL,
+	info, err := c.GetRechargeInfo(context.Background(), &connector.AccountTarget{
+		BaseURL: srv.URL,
 	}, &connector.AuthSession{AccessToken: "token"})
 	if err != nil {
 		t.Fatalf("GetRechargeInfo: %v", err)
@@ -252,8 +252,8 @@ func TestCreateRechargePrefersQRCodeOnDesktop(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	launch, err := c.CreateRecharge(context.Background(), &connector.Channel{
-		SiteURL: srv.URL,
+	launch, err := c.CreateRecharge(context.Background(), &connector.AccountTarget{
+		BaseURL: srv.URL,
 	}, &connector.AuthSession{AccessToken: "token"}, connector.RechargeRequest{
 		Amount:        12.5,
 		PaymentMethod: "wxpay",
@@ -276,8 +276,8 @@ func TestCreateRechargePrefersRedirectOnMobile(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	launch, err := c.CreateRecharge(context.Background(), &connector.Channel{
-		SiteURL: srv.URL,
+	launch, err := c.CreateRecharge(context.Background(), &connector.AccountTarget{
+		BaseURL: srv.URL,
 	}, &connector.AuthSession{AccessToken: "token"}, connector.RechargeRequest{
 		Amount:        12.5,
 		PaymentMethod: "wxpay",
@@ -300,8 +300,8 @@ func TestCreateRechargeUsesPaymentModeRedirect(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	launch, err := c.CreateRecharge(context.Background(), &connector.Channel{
-		SiteURL: srv.URL,
+	launch, err := c.CreateRecharge(context.Background(), &connector.AccountTarget{
+		BaseURL: srv.URL,
 	}, &connector.AuthSession{AccessToken: "token"}, connector.RechargeRequest{
 		Amount:        12.5,
 		PaymentMethod: "wxpay",
@@ -324,8 +324,8 @@ func TestCreateRechargeUsesPaymentModeQRCode(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	launch, err := c.CreateRecharge(context.Background(), &connector.Channel{
-		SiteURL: srv.URL,
+	launch, err := c.CreateRecharge(context.Background(), &connector.AccountTarget{
+		BaseURL: srv.URL,
 	}, &connector.AuthSession{AccessToken: "token"}, connector.RechargeRequest{
 		Amount:        12.5,
 		PaymentMethod: "wxpay",
@@ -348,8 +348,8 @@ func TestCreateRechargeRejectsComplexFlow(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	_, err := c.CreateRecharge(context.Background(), &connector.Channel{
-		SiteURL: srv.URL,
+	_, err := c.CreateRecharge(context.Background(), &connector.AccountTarget{
+		BaseURL: srv.URL,
 	}, &connector.AuthSession{AccessToken: "token"}, connector.RechargeRequest{
 		Amount:        12.5,
 		PaymentMethod: "wxpay",
@@ -368,8 +368,8 @@ func TestGetSubscriptionInfo(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	info, err := c.GetSubscriptionInfo(context.Background(), &connector.Channel{
-		SiteURL: srv.URL,
+	info, err := c.GetSubscriptionInfo(context.Background(), &connector.AccountTarget{
+		BaseURL: srv.URL,
 	}, &connector.AuthSession{AccessToken: "token"})
 	if err != nil {
 		t.Fatalf("GetSubscriptionInfo: %v", err)
@@ -397,8 +397,8 @@ func TestGetSubscriptionUsage(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	info, err := c.GetSubscriptionUsage(context.Background(), &connector.Channel{
-		SiteURL: srv.URL,
+	info, err := c.GetSubscriptionUsage(context.Background(), &connector.AccountTarget{
+		BaseURL: srv.URL,
 	}, &connector.AuthSession{AccessToken: "token"})
 	if err != nil {
 		t.Fatalf("GetSubscriptionUsage: %v", err)
@@ -430,8 +430,8 @@ func TestGetSubscriptionUsageDirectSubscriptionList(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	info, err := c.GetSubscriptionUsage(context.Background(), &connector.Channel{
-		SiteURL: srv.URL,
+	info, err := c.GetSubscriptionUsage(context.Background(), &connector.AccountTarget{
+		BaseURL: srv.URL,
 	}, &connector.AuthSession{AccessToken: "token"})
 	if err != nil {
 		t.Fatalf("GetSubscriptionUsage: %v", err)
@@ -460,8 +460,8 @@ func TestGetSubscriptionUsageSubscriptionFallbackLimits(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	info, err := c.GetSubscriptionUsage(context.Background(), &connector.Channel{
-		SiteURL: srv.URL,
+	info, err := c.GetSubscriptionUsage(context.Background(), &connector.AccountTarget{
+		BaseURL: srv.URL,
 	}, &connector.AuthSession{AccessToken: "token"})
 	if err != nil {
 		t.Fatalf("GetSubscriptionUsage: %v", err)
@@ -494,8 +494,8 @@ func TestCreateSubscriptionQRCode(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	launch, err := c.CreateSubscription(context.Background(), &connector.Channel{
-		SiteURL: srv.URL,
+	launch, err := c.CreateSubscription(context.Background(), &connector.AccountTarget{
+		BaseURL: srv.URL,
 	}, &connector.AuthSession{AccessToken: "token"}, connector.SubscriptionRequest{
 		PlanID:        "7",
 		PaymentMethod: "wxpay",
@@ -518,8 +518,8 @@ func TestCreateSubscriptionRedirect(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	launch, err := c.CreateSubscription(context.Background(), &connector.Channel{
-		SiteURL: srv.URL,
+	launch, err := c.CreateSubscription(context.Background(), &connector.AccountTarget{
+		BaseURL: srv.URL,
 	}, &connector.AuthSession{AccessToken: "token"}, connector.SubscriptionRequest{
 		PlanID:        "7",
 		PaymentMethod: "alipay",
@@ -541,8 +541,8 @@ func TestCreateSubscriptionRejectsComplexFlow(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	_, err := c.CreateSubscription(context.Background(), &connector.Channel{
-		SiteURL: srv.URL,
+	_, err := c.CreateSubscription(context.Background(), &connector.AccountTarget{
+		BaseURL: srv.URL,
 	}, &connector.AuthSession{AccessToken: "token"}, connector.SubscriptionRequest{
 		PlanID:        "7",
 		PaymentMethod: "wxpay",
@@ -576,7 +576,7 @@ func TestListAPIKeys(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	page, err := c.ListAPIKeys(context.Background(), &connector.Channel{SiteURL: srv.URL}, &connector.AuthSession{AccessToken: "token"}, connector.APIKeyQuery{
+	page, err := c.ListAPIKeys(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, &connector.AuthSession{AccessToken: "token"}, connector.APIKeyQuery{
 		Page:     2,
 		PageSize: 10,
 		Search:   "main",
@@ -601,7 +601,7 @@ func TestListAPIKeyGroups(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	groups, err := c.ListAPIKeyGroups(context.Background(), &connector.Channel{SiteURL: srv.URL}, &connector.AuthSession{AccessToken: "token"})
+	groups, err := c.ListAPIKeyGroups(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, &connector.AuthSession{AccessToken: "token"})
 	if err != nil {
 		t.Fatalf("ListAPIKeyGroups: %v", err)
 	}
@@ -622,7 +622,7 @@ func TestGetAnnouncements(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	items, err := c.GetAnnouncements(context.Background(), &connector.Channel{SiteURL: srv.URL}, &connector.AuthSession{AccessToken: "token"})
+	items, err := c.GetAnnouncements(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, &connector.AuthSession{AccessToken: "token"})
 	if err != nil {
 		t.Fatalf("GetAnnouncements: %v", err)
 	}
@@ -679,7 +679,7 @@ func TestCreateUpdateDeleteRevealAPIKey(t *testing.T) {
 
 	c := New()
 	session := &connector.AuthSession{AccessToken: "token"}
-	created, err := c.CreateAPIKey(context.Background(), &connector.Channel{SiteURL: srv.URL}, session, connector.APIKeyCreateRequest{
+	created, err := c.CreateAPIKey(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, session, connector.APIKeyCreateRequest{
 		Name:      "main",
 		CustomKey: "sk-custom",
 	})
@@ -689,7 +689,7 @@ func TestCreateUpdateDeleteRevealAPIKey(t *testing.T) {
 	if created.Key != "sk-custom" {
 		t.Fatalf("created = %#v", created)
 	}
-	updated, err := c.UpdateAPIKey(context.Background(), &connector.Channel{SiteURL: srv.URL}, session, 8, connector.APIKeyUpdateRequest{
+	updated, err := c.UpdateAPIKey(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, session, 8, connector.APIKeyUpdateRequest{
 		Status: strPtr("disabled"),
 	})
 	if err != nil {
@@ -698,10 +698,10 @@ func TestCreateUpdateDeleteRevealAPIKey(t *testing.T) {
 	if updated.Status != "disabled" {
 		t.Fatalf("updated status = %q", updated.Status)
 	}
-	if err := c.DeleteAPIKey(context.Background(), &connector.Channel{SiteURL: srv.URL}, session, 8); err != nil {
+	if err := c.DeleteAPIKey(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, session, 8); err != nil {
 		t.Fatalf("DeleteAPIKey: %v", err)
 	}
-	key, err := c.RevealAPIKey(context.Background(), &connector.Channel{SiteURL: srv.URL}, session, 8)
+	key, err := c.RevealAPIKey(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, session, 8)
 	if err != nil {
 		t.Fatalf("RevealAPIKey: %v", err)
 	}

@@ -18,20 +18,22 @@ import (
 	"time"
 )
 
-// ChannelType 渠道类型枚举，与 storage.ChannelType 同步。
-type ChannelType string
+// UpstreamType identifies an upstream implementation.
+type UpstreamType string
 
 const (
-	TypeNewAPI  ChannelType = "newapi"
-	TypeSub2API ChannelType = "sub2api"
+	TypeNewAPI  UpstreamType = "newapi"
+	TypeSub2API UpstreamType = "sub2api"
 )
 
-// Channel 已解密的渠道连接信息，由 channel 层负责构造。
-type Channel struct {
-	ID                     uint
-	Name                   string
-	Type                   ChannelType
-	SiteURL                string
+// AccountTarget is the ephemeral, decrypted input passed to a connector.
+// It intentionally combines a site target with account identity without
+// exposing persistence models to connector implementations.
+type AccountTarget struct {
+	AccountID              uint
+	Alias                  string
+	Type                   UpstreamType
+	BaseURL                string
 	Username               string
 	Password               string
 	LoginExtraParams       map[string]any
@@ -332,31 +334,31 @@ type APIKeyUpdateRequest struct {
 type Connector interface {
 	// GetTurnstileSiteKey 返回上游当前的 Turnstile site key。
 	// 站点没有开启 Turnstile 时返回 ""（不视作错误）。
-	GetTurnstileSiteKey(ctx context.Context, channel *Channel) (string, error)
+	GetTurnstileSiteKey(ctx context.Context, target *AccountTarget) (string, error)
 
-	Login(ctx context.Context, channel *Channel) (*AuthSession, error)
-	CheckAuth(ctx context.Context, channel *Channel, session *AuthSession) error
-	GetBalance(ctx context.Context, channel *Channel, session *AuthSession) (*BalanceResult, error)
-	GetCosts(ctx context.Context, channel *Channel, session *AuthSession) (*CostResult, error)
-	GetRates(ctx context.Context, channel *Channel, session *AuthSession) ([]RateResult, error)
-	GetAnnouncements(ctx context.Context, channel *Channel, session *AuthSession) ([]AnnouncementResult, error)
-	RedeemCode(ctx context.Context, channel *Channel, session *AuthSession, code string) (*RedeemResult, error)
-	GetRechargeInfo(ctx context.Context, channel *Channel, session *AuthSession) (*RechargeInfo, error)
-	CreateRecharge(ctx context.Context, channel *Channel, session *AuthSession, req RechargeRequest) (*RechargeLaunch, error)
-	GetSubscriptionInfo(ctx context.Context, channel *Channel, session *AuthSession) (*SubscriptionInfo, error)
-	CreateSubscription(ctx context.Context, channel *Channel, session *AuthSession, req SubscriptionRequest) (*SubscriptionLaunch, error)
-	GetSubscriptionUsage(ctx context.Context, channel *Channel, session *AuthSession) (*SubscriptionUsageInfo, error)
-	ListAPIKeys(ctx context.Context, channel *Channel, session *AuthSession, query APIKeyQuery) (*APIKeyPage, error)
-	ListAPIKeyGroups(ctx context.Context, channel *Channel, session *AuthSession) ([]APIKeyGroup, error)
-	CreateAPIKey(ctx context.Context, channel *Channel, session *AuthSession, req APIKeyCreateRequest) (*APIKey, error)
-	UpdateAPIKey(ctx context.Context, channel *Channel, session *AuthSession, id int64, req APIKeyUpdateRequest) (*APIKey, error)
-	DeleteAPIKey(ctx context.Context, channel *Channel, session *AuthSession, id int64) error
-	RevealAPIKey(ctx context.Context, channel *Channel, session *AuthSession, id int64) (string, error)
+	Login(ctx context.Context, target *AccountTarget) (*AuthSession, error)
+	CheckAuth(ctx context.Context, target *AccountTarget, session *AuthSession) error
+	GetBalance(ctx context.Context, target *AccountTarget, session *AuthSession) (*BalanceResult, error)
+	GetCosts(ctx context.Context, target *AccountTarget, session *AuthSession) (*CostResult, error)
+	GetRates(ctx context.Context, target *AccountTarget, session *AuthSession) ([]RateResult, error)
+	GetAnnouncements(ctx context.Context, target *AccountTarget, session *AuthSession) ([]AnnouncementResult, error)
+	RedeemCode(ctx context.Context, target *AccountTarget, session *AuthSession, code string) (*RedeemResult, error)
+	GetRechargeInfo(ctx context.Context, target *AccountTarget, session *AuthSession) (*RechargeInfo, error)
+	CreateRecharge(ctx context.Context, target *AccountTarget, session *AuthSession, req RechargeRequest) (*RechargeLaunch, error)
+	GetSubscriptionInfo(ctx context.Context, target *AccountTarget, session *AuthSession) (*SubscriptionInfo, error)
+	CreateSubscription(ctx context.Context, target *AccountTarget, session *AuthSession, req SubscriptionRequest) (*SubscriptionLaunch, error)
+	GetSubscriptionUsage(ctx context.Context, target *AccountTarget, session *AuthSession) (*SubscriptionUsageInfo, error)
+	ListAPIKeys(ctx context.Context, target *AccountTarget, session *AuthSession, query APIKeyQuery) (*APIKeyPage, error)
+	ListAPIKeyGroups(ctx context.Context, target *AccountTarget, session *AuthSession) ([]APIKeyGroup, error)
+	CreateAPIKey(ctx context.Context, target *AccountTarget, session *AuthSession, req APIKeyCreateRequest) (*APIKey, error)
+	UpdateAPIKey(ctx context.Context, target *AccountTarget, session *AuthSession, id int64, req APIKeyUpdateRequest) (*APIKey, error)
+	DeleteAPIKey(ctx context.Context, target *AccountTarget, session *AuthSession, id int64) error
+	RevealAPIKey(ctx context.Context, target *AccountTarget, session *AuthSession, id int64) (string, error)
 }
 
 // SessionRefresher 是支持 refresh_token 续期的 connector 可选能力。
 type SessionRefresher interface {
-	RefreshSession(ctx context.Context, channel *Channel, session *AuthSession) (*AuthSession, error)
+	RefreshSession(ctx context.Context, target *AccountTarget, session *AuthSession) (*AuthSession, error)
 }
 
 type ProxySetter interface {
@@ -377,18 +379,18 @@ type Factory func() Connector
 
 var (
 	mu       sync.RWMutex
-	registry = map[ChannelType]Factory{}
+	registry = map[UpstreamType]Factory{}
 )
 
 // Register 由子包在 init() 中调用，注册其类型对应的 Connector 构造器。
-func Register(t ChannelType, f Factory) {
+func Register(t UpstreamType, f Factory) {
 	mu.Lock()
 	defer mu.Unlock()
 	registry[t] = f
 }
 
 // For 按 ChannelType 取一个新的 Connector。未注册返回错误。
-func For(t ChannelType) (Connector, error) {
+func For(t UpstreamType) (Connector, error) {
 	mu.RLock()
 	defer mu.RUnlock()
 	f, ok := registry[t]

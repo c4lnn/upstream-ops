@@ -12,9 +12,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bejix/upstream-ops/backend/account"
+	"github.com/bejix/upstream-ops/backend/accountbundle"
 	"github.com/bejix/upstream-ops/backend/api"
 	"github.com/bejix/upstream-ops/backend/auth"
-	"github.com/bejix/upstream-ops/backend/channel"
 	"github.com/bejix/upstream-ops/backend/config"
 	"github.com/bejix/upstream-ops/backend/crypto"
 	"github.com/bejix/upstream-ops/backend/logger"
@@ -93,7 +94,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	channels := storage.NewChannels(db)
+	accounts := storage.NewUpstreamAccounts(db)
+	sites := storage.NewUpstreamSites(db)
 	authSessions := storage.NewAuthSessions(db)
 	captchas := storage.NewCaptchas(db)
 	notifies := storage.NewNotifications(db)
@@ -107,9 +109,11 @@ func main() {
 	managedSyncAccounts := storage.NewUpstreamSyncManagedAccounts(db)
 	syncLogs := storage.NewUpstreamSyncLogs(db)
 
-	channelSvc := channel.NewService(channels, authSessions, captchas, rates, monLogs, cipher)
-	channelSvc.UpdateProxyConfig(cfg.Proxy)
-	channelSvc.UpdateUpstreamConfig(cfg.Upstream)
+	accountSvc := account.NewService(accounts, authSessions, captchas, rates, monLogs, cipher)
+	accountSvc.SetSites(sites)
+	accountSvc.UpdateProxyConfig(cfg.Proxy)
+	accountSvc.UpdateUpstreamConfig(cfg.Upstream)
+	accountBundleSvc := accountbundle.NewService(db, cipher)
 	dispatcher := notify.NewDispatcher(notifies, cipher, log, notify.Policy{
 		NotificationPrefix:                       cfg.App.NotificationPrefix,
 		BatchRateChanges:                         cfg.Notifications.BatchRateChanges,
@@ -123,12 +127,14 @@ func main() {
 		SendMaxAttempts:                          cfg.Notifications.SendMaxAttempts,
 	})
 	dispatcher.UpdateProxyConfig(cfg.Proxy)
-	monitorSvc := monitor.NewService(channels, announcements, rates, monLogs, channelSvc, dispatcher, log)
-	syncSvc := syncer.New(channels, rates, cipher, channelSvc, log, syncTargets, syncGroups, upstreamSyncGroups, upstreamSyncAccounts, managedSyncAccounts, syncLogs)
+	monitorSvc := monitor.NewService(accounts, announcements, rates, monLogs, accountSvc, dispatcher, log)
+	monitorSvc.SetSites(sites)
+	syncSvc := syncer.New(accounts, sites, rates, cipher, accountSvc, log, syncTargets, syncGroups, upstreamSyncGroups, upstreamSyncAccounts, managedSyncAccounts, syncLogs)
 	syncSvc.SetDispatcher(dispatcher)
 
+	taskRunCoordinator := scheduler.NewTaskRunCoordinator()
 	schedulerFactory := func(scfg config.SchedulerConfig, pcfg config.ProxyConfig) *scheduler.Scheduler {
-		return scheduler.New(scfg, monitorSvc, monLogs, syncLogs, rates, notifies, announcements, captchas, cipher, syncSvc, pcfg, log)
+		return scheduler.New(scfg, monitorSvc, monLogs, syncLogs, rates, notifies, announcements, captchas, cipher, syncSvc, pcfg, log, taskRunCoordinator)
 	}
 	sch := schedulerFactory(cfg.Scheduler, cfg.Proxy)
 	if err := sch.Start(); err != nil {
@@ -142,7 +148,7 @@ func main() {
 		cfg.Security.AppSecret,
 		log,
 		dispatcher,
-		channelSvc,
+		accountSvc,
 		authSvc,
 		sch,
 		cfg.Proxy,
@@ -168,22 +174,24 @@ func main() {
 	}
 
 	api.Register(router, &api.Deps{
-		DB:            db,
-		Cipher:        cipher,
-		Runtime:       runtimeMgr,
-		Channels:      channels,
-		Sessions:      authSessions,
-		Captchas:      captchas,
-		Notifies:      notifies,
-		Announcements: announcements,
-		Rates:         rates,
-		MonLogs:       monLogs,
-		ChannelSvc:    channelSvc,
-		Monitor:       monitorSvc,
-		Dispatcher:    dispatcher,
-		UpstreamSync:  syncSvc,
-		Log:           log,
-		Frontend:      frontendFS,
+		DB:             db,
+		Cipher:         cipher,
+		Runtime:        runtimeMgr,
+		Accounts:       accounts,
+		Sites:          sites,
+		Sessions:       authSessions,
+		Captchas:       captchas,
+		Notifies:       notifies,
+		Announcements:  announcements,
+		Rates:          rates,
+		MonLogs:        monLogs,
+		AccountSvc:     accountSvc,
+		AccountBundles: accountBundleSvc,
+		Monitor:        monitorSvc,
+		Dispatcher:     dispatcher,
+		UpstreamSync:   syncSvc,
+		Log:            log,
+		Frontend:       frontendFS,
 	})
 
 	srv := &http.Server{

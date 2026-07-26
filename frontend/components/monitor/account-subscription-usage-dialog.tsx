@@ -18,22 +18,22 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { apiFetch } from "@/lib/api"
-import { channelTypeLabel, dateTime, decimal } from "@/lib/format"
+import { dateTime, decimal } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import type {
-  Channel,
-  ChannelSubscriptionUsage,
-  ChannelSubscriptionUsageInfo,
-  ChannelSubscriptionUsageWindow,
+  AccountSubscriptionUsage,
+  AccountSubscriptionUsageInfo,
+  AccountSubscriptionUsageWindow,
+  UpstreamAccount,
 } from "@/lib/api-types"
 
-interface ChannelSubscriptionUsageDialogProps {
+interface AccountSubscriptionUsageDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  channel: Channel | null
+  account: UpstreamAccount | null
 }
 
-function normalizeUsageWindow(value: unknown): ChannelSubscriptionUsageWindow | null {
+function normalizeUsageWindow(value: unknown): AccountSubscriptionUsageWindow | null {
   if (!value || typeof value !== "object") return null
   const raw = value as Record<string, unknown>
   const limit = Number(raw.limit_usd)
@@ -53,7 +53,7 @@ function normalizeUsageWindow(value: unknown): ChannelSubscriptionUsageWindow | 
   }
 }
 
-function normalizeSubscriptionUsageInfo(value: unknown): ChannelSubscriptionUsageInfo {
+function normalizeSubscriptionUsageInfo(value: unknown): AccountSubscriptionUsageInfo {
   const wrapped = value && typeof value === "object" && "data" in value
     ? (value as { data?: unknown }).data
     : value
@@ -78,12 +78,12 @@ function normalizeSubscriptionUsageInfo(value: unknown): ChannelSubscriptionUsag
   }
 }
 
-function usageWindowItems(item: ChannelSubscriptionUsage) {
+function usageWindowItems(item: AccountSubscriptionUsage) {
   return [
     { key: "daily", label: "今日", value: item.daily },
     { key: "weekly", label: "本周", value: item.weekly },
     { key: "monthly", label: "本月", value: item.monthly },
-  ].filter((entry): entry is { key: string; label: string; value: ChannelSubscriptionUsageWindow } => !!entry.value && entry.value.limit_usd > 0)
+  ].filter((entry): entry is { key: string; label: string; value: AccountSubscriptionUsageWindow } => !!entry.value && entry.value.limit_usd > 0)
 }
 
 function subscriptionStatusLabel(status: string) {
@@ -96,8 +96,8 @@ function subscriptionStatusLabel(status: string) {
   return map[status] ?? (status || "未知")
 }
 
-function lowestWindow(items: ChannelSubscriptionUsage[], key: "daily" | "weekly" | "monthly") {
-  let current: ChannelSubscriptionUsageWindow | null = null
+function lowestWindow(items: AccountSubscriptionUsage[], key: "daily" | "weekly" | "monthly") {
+  let current: AccountSubscriptionUsageWindow | null = null
   for (const item of items) {
     const value = item[key]
     if (!value || value.limit_usd <= 0) continue
@@ -106,18 +106,18 @@ function lowestWindow(items: ChannelSubscriptionUsage[], key: "daily" | "weekly"
   return current
 }
 
-export function ChannelSubscriptionUsageSummary({ channel }: { channel: Channel }) {
-  const supported = channel.type === "sub2api" && !!channel.subscription_enabled
+export function AccountSubscriptionUsageSummary({ account }: { account: UpstreamAccount }) {
+  const supported = !!account.subscription_enabled
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [usage, setUsage] = useState<ChannelSubscriptionUsageInfo | null>(null)
+  const [usage, setUsage] = useState<AccountSubscriptionUsageInfo | null>(null)
 
   useEffect(() => {
     if (!supported) return
     let cancelled = false
     setLoading(true)
     setError(null)
-    apiFetch<unknown>(`/channels/${channel.id}/subscription-usage`)
+    apiFetch<unknown>(`/accounts/${account.id}/subscription-usage`)
       .then((data) => {
         if (!cancelled) setUsage(normalizeSubscriptionUsageInfo(data))
       })
@@ -131,7 +131,7 @@ export function ChannelSubscriptionUsageSummary({ channel }: { channel: Channel 
     return () => {
       cancelled = true
     }
-  }, [channel.id, supported])
+  }, [account.id, supported])
 
   if (!supported) return null
 
@@ -140,7 +140,7 @@ export function ChannelSubscriptionUsageSummary({ channel }: { channel: Channel 
     { label: "日剩余", value: lowestWindow(items, "daily") },
     { label: "周剩余", value: lowestWindow(items, "weekly") },
     { label: "月剩余", value: lowestWindow(items, "monthly") },
-  ].filter((item): item is { label: string; value: ChannelSubscriptionUsageWindow } => !!item.value)
+  ].filter((item): item is { label: string; value: AccountSubscriptionUsageWindow } => !!item.value)
 
   return (
     <div className="mt-3 rounded-lg border border-border bg-muted/20 px-3 py-2">
@@ -176,18 +176,17 @@ export function ChannelSubscriptionUsageSummary({ channel }: { channel: Channel 
   )
 }
 
-export function ChannelSubscriptionUsageMetricTiles({ channel }: { channel: Channel }) {
-  const supported = channel.type === "sub2api"
-  const enabled = supported && !!channel.subscription_enabled
+export function AccountSubscriptionUsageMetricTiles({ account }: { account: UpstreamAccount }) {
+  const enabled = !!account.subscription_enabled
   const [loading, setLoading] = useState(false)
-  const [usage, setUsage] = useState<ChannelSubscriptionUsageInfo | null>(null)
+  const [usage, setUsage] = useState<AccountSubscriptionUsageInfo | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
 
   useEffect(() => {
     if (!enabled) return
     let cancelled = false
     setLoading(true)
-    apiFetch<unknown>(`/channels/${channel.id}/subscription-usage`)
+    apiFetch<unknown>(`/accounts/${account.id}/subscription-usage`)
       .then((data) => {
         if (!cancelled) setUsage(normalizeSubscriptionUsageInfo(data))
       })
@@ -200,20 +199,20 @@ export function ChannelSubscriptionUsageMetricTiles({ channel }: { channel: Chan
     return () => {
       cancelled = true
     }
-  }, [channel.id, enabled])
+  }, [account.id, enabled])
 
   const items = usage?.items ?? []
   const stats = [
     { label: "日", value: lowestWindow(items, "daily") },
     { label: "周", value: lowestWindow(items, "weekly") },
     { label: "月", value: lowestWindow(items, "monthly") },
-  ].filter((item): item is { label: string; value: ChannelSubscriptionUsageWindow } => !!item.value)
-  const lowest = stats.reduce<ChannelSubscriptionUsageWindow | null>((current, item) => {
+  ].filter((item): item is { label: string; value: AccountSubscriptionUsageWindow } => !!item.value)
+  const lowest = stats.reduce<AccountSubscriptionUsageWindow | null>((current, item) => {
     if (!current || item.value.remaining_percent < current.remaining_percent) return item.value
     return current
   }, null)
-  const subscriptionText = !supported ? "不支持" : !enabled ? "未启用" : loading && !usage ? "加载中" : `${items.length} 个`
-  const usageText = !supported || !enabled ? "—" : loading && !usage ? "加载中" : lowest ? `${decimal(lowest.remaining_percent, 0)}%` : "不限"
+  const subscriptionText = !enabled ? "未启用" : loading && !usage ? "加载中" : `${items.length} 个`
+  const usageText = !enabled ? "—" : loading && !usage ? "加载中" : lowest ? `${decimal(lowest.remaining_percent, 0)}%` : "不限"
   const hasSubscriptions = items.length > 0
 
   return (
@@ -267,32 +266,32 @@ export function ChannelSubscriptionUsageMetricTiles({ channel }: { channel: Chan
           )}
         </div>
       </div>
-      <ChannelSubscriptionUsageDialog
+      <AccountSubscriptionUsageDialog
         open={dialogOpen}
         onOpenChange={setDialogOpen}
-        channel={channel}
+        account={account}
       />
     </>
   )
 }
 
-export function ChannelSubscriptionUsageDialog({
+export function AccountSubscriptionUsageDialog({
   open,
   onOpenChange,
-  channel,
-}: ChannelSubscriptionUsageDialogProps) {
-  const channelID = channel?.id ?? null
+  account,
+}: AccountSubscriptionUsageDialogProps) {
+  const accountID = account?.id ?? null
   const [loading, setLoading] = useState(false)
   const [reloadTick, setReloadTick] = useState(0)
   const [error, setError] = useState<string | null>(null)
-  const [usage, setUsage] = useState<ChannelSubscriptionUsageInfo | null>(null)
+  const [usage, setUsage] = useState<AccountSubscriptionUsageInfo | null>(null)
 
   useEffect(() => {
-    if (!open || channelID == null) return
+    if (!open || accountID == null) return
     let cancelled = false
     setLoading(true)
     setError(null)
-    apiFetch<unknown>(`/channels/${channelID}/subscription-usage`)
+    apiFetch<unknown>(`/accounts/${accountID}/subscription-usage`)
       .then((data) => {
         if (!cancelled) setUsage(normalizeSubscriptionUsageInfo(data))
       })
@@ -309,12 +308,12 @@ export function ChannelSubscriptionUsageDialog({
     return () => {
       cancelled = true
     }
-  }, [open, channelID, reloadTick])
+  }, [open, accountID, reloadTick])
 
   const items = usage?.items ?? []
-  const description = channel
-    ? `${channel.name} · ${channelTypeLabel(channel.type)}`
-    : "查看 Sub2API 当前订阅的日、周、月用量。"
+  const description = account
+    ? account.alias
+    : "查看当前账号订阅的日、周、月用量。"
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bejix/upstream-ops/backend/account"
 	"github.com/bejix/upstream-ops/backend/auth"
-	"github.com/bejix/upstream-ops/backend/channel"
 	"github.com/bejix/upstream-ops/backend/config"
 	"github.com/bejix/upstream-ops/backend/notify"
 	"github.com/bejix/upstream-ops/backend/scheduler"
@@ -22,7 +22,7 @@ type Manager struct {
 	securitySecret   string
 	log              *slog.Logger
 	dispatcher       *notify.Dispatcher
-	channelSvc       *channel.Service
+	channelSvc       *account.Service
 	schedulerFactory SchedulerFactory
 	auth             *auth.Service
 	scheduler        *scheduler.Scheduler
@@ -40,7 +40,7 @@ func New(
 	securitySecret string,
 	log *slog.Logger,
 	dispatcher *notify.Dispatcher,
-	channelSvc *channel.Service,
+	channelSvc *account.Service,
 	authSvc *auth.Service,
 	schedulerSvc *scheduler.Scheduler,
 	proxyConfig config.ProxyConfig,

@@ -10,10 +10,13 @@ type AuthSessions struct{ db *gorm.DB }
 
 func NewAuthSessions(db *gorm.DB) *AuthSessions { return &AuthSessions{db: db} }
 
-// FindByChannel 取渠道的会话凭据。返回 (nil, nil) 表示尚无 session。
-func (r *AuthSessions) FindByChannel(channelID uint) (*AuthSession, error) {
+// WithDB returns a repository bound to db, typically a transaction handle.
+func (r *AuthSessions) WithDB(db *gorm.DB) *AuthSessions { return NewAuthSessions(db) }
+
+// FindByAccount returns an account session, or (nil, nil) when none exists.
+func (r *AuthSessions) FindByAccount(accountID uint) (*AuthSession, error) {
 	var s AuthSession
-	err := r.db.First(&s, "channel_id = ?", channelID).Error
+	err := r.db.First(&s, "account_id = ?", accountID).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
@@ -26,7 +29,7 @@ func (r *AuthSessions) FindByChannel(channelID uint) (*AuthSession, error) {
 // Upsert 写入或更新会话。
 func (r *AuthSessions) Upsert(s *AuthSession) error {
 	var existing AuthSession
-	err := r.db.First(&existing, "channel_id = ?", s.ChannelID).Error
+	err := r.db.First(&existing, "account_id = ?", s.AccountID).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return r.db.Create(s).Error
 	}
@@ -36,7 +39,7 @@ func (r *AuthSessions) Upsert(s *AuthSession) error {
 	return r.db.Save(s).Error
 }
 
-// Delete 删除渠道的 session（例如手动重置）。
-func (r *AuthSessions) Delete(channelID uint) error {
-	return r.db.Delete(&AuthSession{}, "channel_id = ?", channelID).Error
+// Delete removes an account session.
+func (r *AuthSessions) Delete(accountID uint) error {
+	return r.db.Delete(&AuthSession{}, "account_id = ?", accountID).Error
 }

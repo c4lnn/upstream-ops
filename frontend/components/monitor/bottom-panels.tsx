@@ -29,13 +29,13 @@ import {
 import {
   useAnnouncements,
   useCaptchaConfigs,
-  useDashboardSummary,
   useNotificationChannels,
   useNotificationLogs,
+  useSites,
 } from "@/lib/queries"
 import { apiFetch } from "@/lib/api"
 import { useTriggerRefresh } from "@/lib/refresh-context"
-import { channelTypeLabel, dateTime, decimal, money, relativeTime } from "@/lib/format"
+import { dateTime, decimal, money, relativeTime } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import { CaptchaFormDialog } from "@/components/monitor/captcha-form-dialog"
 import { NotificationFormDialog } from "@/components/monitor/notification-form-dialog"
@@ -162,9 +162,7 @@ export function AlertFeed() {
                             </span>
                           </div>
                           <p className="truncate text-xs text-muted-foreground">
-                            {a.channel_name
-                              ? `${a.channel_name}${a.channel_type ? ` · ${channelTypeLabel(a.channel_type)}` : ""}`
-                              : `渠道 #${a.channel_id}${a.channel_type ? ` · ${channelTypeLabel(a.channel_type)}` : ""}`}
+                            {a.channel_name ?? `通知渠道 #${a.channel_id}`}
                           </p>
                         </div>
                       </div>
@@ -206,9 +204,7 @@ export function AlertFeed() {
                             </span>
                           </div>
                           <p className="mt-1 text-xs text-muted-foreground">
-                            {a.channel_name
-                              ? `${a.channel_name}${a.channel_type ? ` · ${channelTypeLabel(a.channel_type)}` : ""}`
-                              : `渠道 #${a.channel_id}${a.channel_type ? ` · ${channelTypeLabel(a.channel_type)}` : ""}`}
+                            {a.channel_name ?? `通知渠道 #${a.channel_id}`}
                           </p>
                           {a.body ? (
                             <p className="mt-1 text-xs leading-5 text-muted-foreground">
@@ -255,7 +251,7 @@ export function AlertFeed() {
 }
 
 export function UpstreamAnnouncements() {
-  const summary = useDashboardSummary()
+  const sitesQuery = useSites()
   const preview = useAnnouncements(1, FEED_PREVIEW_SIZE)
   const [active, setActive] = useState<UpstreamAnnouncement | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
@@ -268,10 +264,8 @@ export function UpstreamAnnouncements() {
   const [feedLoading, setFeedLoading] = useState(false)
   const [feedError, setFeedError] = useState<string | null>(null)
   const items = preview.data?.items ?? []
-  const channels = summary.data?.channels ?? []
-
-  const channelByID = new Map(channels.map((c) => [c.id, c] as const))
-  const activeChannel = active ? channelByID.get(active.channel_id) : null
+  const siteByID = new Map((sitesQuery.data ?? []).map((site) => [site.id, site] as const))
+  const activeSite = active ? siteByID.get(active.site_id) : null
 
   function loadNextPage() {
     if (feedLoading || page >= feedMeta.pages) return
@@ -341,7 +335,7 @@ export function UpstreamAnnouncements() {
             <div className="max-h-80 overflow-y-auto overscroll-contain lg:h-full lg:max-h-none">
               <ul className="divide-y divide-border">
                 {items.map((item) => {
-                  const ch = channelByID.get(item.channel_id)
+                  const site = siteByID.get(item.site_id)
                   const title = announcementTitle(item)
                   const when = item.published_at || item.first_seen_at
                   return (
@@ -364,7 +358,7 @@ export function UpstreamAnnouncements() {
                         </div>
                         <div className="flex min-w-0">
                           <span className="truncate text-xs text-muted-foreground">
-                            {ch ? `${ch.name} · ${channelTypeLabel(ch.type)}` : `渠道 #${item.channel_id}`}
+                            {site ? site.name : `站点 #${item.site_id}`}
                           </span>
                         </div>
                       </button>
@@ -386,9 +380,7 @@ export function UpstreamAnnouncements() {
               </DialogHeader>
               <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                 <Badge variant="outline">
-                  {activeChannel
-                    ? `${activeChannel.name} · ${channelTypeLabel(activeChannel.type)}`
-                    : `渠道 #${active.channel_id}`}
+                  {activeSite ? activeSite.name : `站点 #${active.site_id}`}
                 </Badge>
                 {active.type ? <Badge variant="outline">{active.type}</Badge> : null}
                 <span>{dateTime(active.published_at || active.first_seen_at)}</span>
@@ -427,7 +419,7 @@ export function UpstreamAnnouncements() {
           >
             <ul className="divide-y divide-border">
               {feed.map((item) => {
-                const ch = channelByID.get(item.channel_id)
+                const site = siteByID.get(item.site_id)
                 const when = item.published_at || item.first_seen_at
                 return (
                   <li key={item.id}>
@@ -453,7 +445,7 @@ export function UpstreamAnnouncements() {
                       </div>
                       <div className="flex min-w-0">
                         <span className="truncate text-xs text-muted-foreground">
-                          {ch ? `${ch.name} · ${channelTypeLabel(ch.type)}` : `渠道 #${item.channel_id}`}
+                          {site ? site.name : `站点 #${item.site_id}`}
                         </span>
                       </div>
                     </button>
@@ -524,7 +516,7 @@ export function CaptchaStatus() {
   async function handleDelete(c: CaptchaConfig) {
     const ok = await confirm({
       title: `删除打码配置 ${c.name}？`,
-      description: "删除后引用此配置的渠道将无法自动过码，需要重新指定打码 provider。",
+      description: "删除后引用此配置的账号将无法自动过码，需要重新指定打码 provider。",
       confirmLabel: "删除",
       destructive: true,
     })

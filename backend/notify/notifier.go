@@ -15,16 +15,21 @@ import (
 
 // Message 待发送的通知消息。
 //
-// ChannelID / ModelName 用于 Dispatcher 做订阅过滤：
-//   - ChannelID = 来源上游 ID，0 表示系统消息或测试发送，跳过订阅过滤
+// AccountID / ModelName 用于 Dispatcher 做订阅过滤：
+//   - AccountID = 来源上游账号 ID，0 表示系统消息或测试发送，跳过订阅过滤
 //   - ModelName = 倍率相关事件填写当前分组名
 type Message struct {
-	Event     storage.NotificationEvent
-	ChannelID uint
-	ModelName string
-	Subject   string
-	Body      string
-	Extra     map[string]any
+	Event      storage.NotificationEvent
+	AccountID  uint
+	SiteID     uint
+	AccountIDs []uint
+	ScanRunID  string
+	Partial    bool
+	EventKey   string
+	ModelName  string
+	Subject    string
+	Body       string
+	Extra      map[string]any
 }
 
 // Notifier 通知渠道抽象。

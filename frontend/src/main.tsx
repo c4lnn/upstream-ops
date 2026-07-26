@@ -6,7 +6,7 @@ import '@fontsource-variable/geist-mono'
 import { ThemeProvider } from '@/components/theme-provider'
 import { AuthProvider } from '@/lib/auth-context'
 import { RefreshProvider } from '@/lib/refresh-context'
-import { AddChannelProvider } from '@/lib/add-channel-context'
+import { AddSiteProvider } from '@/lib/add-site-context'
 import { AuthGate } from '@/components/auth/auth-gate'
 import { AppShell } from '@/components/app-shell'
 import { Toaster } from '@/components/ui/sonner'
@@ -23,7 +23,7 @@ createRoot(document.getElementById('root')!).render(
         <AuthGate>
           <RefreshProvider>
             <BrowserRouter>
-              <AddChannelProvider>
+              <AddSiteProvider>
                 <Routes>
                   <Route element={<AppShell />}>
                     <Route index element={<DashboardPage />} />
@@ -32,7 +32,7 @@ createRoot(document.getElementById('root')!).render(
                     <Route path="settings" element={<SettingsPage />} />
                   </Route>
                 </Routes>
-              </AddChannelProvider>
+              </AddSiteProvider>
             </BrowserRouter>
           </RefreshProvider>
           <Toaster richColors closeButton position="top-right" />

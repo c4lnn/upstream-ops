@@ -1,14 +1,17 @@
-// Package monitor 周期性扫描渠道，采集余额 / 倍率并写入快照、变化日志和通知。
+// Package monitor 周期性扫描上游账号，采集余额 / 倍率并写入快照、变化日志和通知。
 package monitor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
-	"github.com/bejix/upstream-ops/backend/channel"
+	"github.com/bejix/upstream-ops/backend/account"
 	"github.com/bejix/upstream-ops/backend/connector"
 	"github.com/bejix/upstream-ops/backend/notify"
 	"github.com/bejix/upstream-ops/backend/progress"
@@ -17,71 +20,151 @@ import (
 
 // Service 监控扫描服务。
 type Service struct {
-	channels      *storage.Channels
+	accounts      *storage.UpstreamAccounts
+	sites         *storage.UpstreamSites
 	announcements *storage.UpstreamAnnouncements
 	rates         *storage.Rates
 	monitorLogs   *storage.MonitorLogs
-	channelSvc    *channel.Service
+	accountSvc    *account.Service
 	dispatcher    *notify.Dispatcher
 	log           *slog.Logger
 }
 
+var rateScanSequence atomic.Uint64
+
+func (s *Service) SetSites(sites *storage.UpstreamSites) {
+	s.sites = sites
+}
+
 func NewService(
-	channels *storage.Channels,
+	accounts *storage.UpstreamAccounts,
 	announcements *storage.UpstreamAnnouncements,
 	rates *storage.Rates,
 	monitorLogs *storage.MonitorLogs,
-	channelSvc *channel.Service,
+	accountSvc *account.Service,
 	dispatcher *notify.Dispatcher,
 	log *slog.Logger,
 ) *Service {
 	return &Service{
-		channels:      channels,
+		accounts:      accounts,
 		announcements: announcements,
 		rates:         rates,
 		monitorLogs:   monitorLogs,
-		channelSvc:    channelSvc,
+		accountSvc:    accountSvc,
 		dispatcher:    dispatcher,
 		log:           log,
 	}
 }
 
-// ScanAllBalances 扫描所有启用监控的渠道余额。单个失败不影响其他。
+// ScanAllBalances scans all enabled accounts independently. One account failure
+// never redirects work to another account.
 func (s *Service) ScanAllBalances(ctx context.Context) {
-	list, err := s.channels.ListMonitorEnabled()
+	if s.scanStopped(ctx, "balance") {
+		return
+	}
+	list, err := s.accounts.ListMonitorEnabled()
 	if err != nil {
-		s.log.Error("list channels", "err", err)
+		s.log.Error("list accounts", "err", err)
 		return
 	}
 	for i := range list {
+		if s.scanStopped(ctx, "balance") {
+			return
+		}
 		c := list[i]
 		if err := s.RefreshBalance(ctx, &c); err != nil {
-			s.log.Warn("refresh balance failed", "channel", c.Name, "err", err)
+			s.log.Warn("refresh balance failed", "account", c.Alias, "err", err)
+			if s.scanStopped(ctx, "balance") {
+				return
+			}
 			continue
 		}
+		if s.scanStopped(ctx, "balance") {
+			return
+		}
 		if err := s.CheckSubscriptionUsageAlerts(ctx, &c); err != nil {
-			s.log.Warn("check subscription usage failed", "channel", c.Name, "err", err)
+			s.log.Warn("check subscription usage failed", "account", c.Alias, "err", err)
+			if s.scanStopped(ctx, "balance") {
+				return
+			}
 		}
 	}
 }
 
-// ScanAllRates 扫描所有启用监控的渠道倍率。
+// ScanAllRates scans accounts grouped by site so rate notifications can be
+// aggregated after every account has completed independently.
 func (s *Service) ScanAllRates(ctx context.Context) {
-	list, err := s.channels.ListMonitorEnabled()
-	if err != nil {
-		s.log.Error("list channels", "err", err)
+	if s.scanStopped(ctx, "rates") {
 		return
 	}
-	for i := range list {
-		c := list[i]
-		if err := s.RefreshRates(ctx, &c); err != nil {
-			s.log.Warn("refresh rates failed", "channel", c.Name, "err", err)
+	if s.sites == nil {
+		s.log.Error("site repository is not configured")
+		return
+	}
+	s.ScanAllSiteRates(ctx)
+}
+
+// ScanAllSiteRates 按站点串行扫描账号，并在站点批次结束后统一派发通知。
+func (s *Service) ScanAllSiteRates(ctx context.Context) {
+	if s.scanStopped(ctx, "rates") {
+		return
+	}
+	sites, err := s.sites.List()
+	if err != nil {
+		s.log.Error("list upstream sites", "err", err)
+		return
+	}
+	for _, site := range sites {
+		if s.scanStopped(ctx, "rates") {
+			return
+		}
+		accounts, err := s.sites.ListEnabledAccounts(site.ID)
+		if err != nil {
+			s.log.Warn("list site accounts", "site", site.Name, "err", err)
+			continue
+		}
+		scanRunID := newRateScanRunID()
+		var rateChanges, structureChanges []notify.SiteRateChange
+		failures := make([]string, 0)
+		for i := range accounts {
+			if s.scanStopped(ctx, "rates") {
+				return
+			}
+			account := accounts[i]
+			result, scanErr := s.collectRateChanges(ctx, &account, scanRunID)
+			if s.scanStopped(ctx, "rates") {
+				return
+			}
+			if scanErr != nil {
+				failures = append(failures, fmt.Sprintf("%s：%v", account.Alias, scanErr))
+				continue
+			}
+			rateChanges = append(rateChanges, result.RateChanges...)
+			structureChanges = append(structureChanges, result.StructureChanges...)
+		}
+		if s.scanStopped(ctx, "rates") {
+			return
+		}
+		if len(rateChanges) > 0 {
+			_ = s.dispatcher.DispatchSiteRateBatch(ctx, site, rateChanges, failures)
+		}
+		if len(structureChanges) > 0 {
+			_ = s.dispatcher.DispatchSiteRateStructureBatch(ctx, site, structureChanges, failures)
+		}
+		if s.scanStopped(ctx, "rates") {
+			return
+		}
+		if err := s.syncSiteAnnouncements(ctx, &site); err != nil {
+			s.log.Warn("sync site announcements failed", "site", site.Name, "err", err)
 		}
 	}
 }
 
-// RefreshBalance 单个渠道余额刷新，可被 API 手动触发。
-func (s *Service) RefreshBalance(ctx context.Context, c *storage.Channel) error {
+// RefreshBalance 单个账号余额刷新，可被 API 手动触发。
+func (s *Service) RefreshBalance(ctx context.Context, c *storage.UpstreamAccount) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	resolved, conn, session, err := s.prepare(ctx, c)
 	if err != nil {
 		s.notifyError(ctx, c, storage.EventLoginFailed, "登录失败", err)
@@ -93,7 +176,7 @@ func (s *Service) RefreshBalance(ctx context.Context, c *storage.Channel) error 
 	res, err := conn.GetBalance(ctx, resolved, session)
 	finished := time.Now()
 	_ = s.monitorLogs.Append(&storage.MonitorLog{
-		ChannelID:    c.ID,
+		AccountID:    c.ID,
 		Job:          storage.MonitorJobBalance,
 		Success:      err == nil,
 		ErrorMessage: errString(err),
@@ -110,16 +193,19 @@ func (s *Service) RefreshBalance(ctx context.Context, c *storage.Channel) error 
 	if sampledAt.IsZero() {
 		sampledAt = time.Now()
 	}
-	if err := s.channels.UpdateBalance(c.ID, res.Balance, &sampledAt, ""); err != nil {
+	if err := s.accounts.UpdateBalance(c.ID, res.Balance, &sampledAt, ""); err != nil {
 		return err
 	}
 	_ = s.rates.AppendBalance(&storage.BalanceSnapshot{
-		ChannelID: c.ID,
+		AccountID: c.ID,
 		Balance:   res.Balance,
 		SampledAt: sampledAt,
 	})
 	progress.OK(ctx, progress.StageBalance, fmt.Sprintf("当前余额 %.4f", res.Balance),
 		map[string]any{"balance": res.Balance})
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	progress.Start(ctx, progress.StageCost, "拉取消费…")
 	costRes, err := conn.GetCosts(ctx, resolved, session)
@@ -128,12 +214,12 @@ func (s *Service) RefreshBalance(ctx context.Context, c *storage.Channel) error 
 		s.notifyError(ctx, c, storage.EventMonitorFailed, "消费采集失败", err)
 		return err
 	}
-	if err := s.channels.UpdateCosts(c.ID, costRes.TodayCost, costRes.TotalCost); err != nil {
+	if err := s.accounts.UpdateCosts(c.ID, costRes.TodayCost, costRes.TotalCost); err != nil {
 		progress.Fail(ctx, progress.StageCost, err.Error())
 		return err
 	}
 	_ = s.rates.AppendCost(&storage.CostSnapshot{
-		ChannelID: c.ID,
+		AccountID: c.ID,
 		TodayCost: costRes.TodayCost,
 		SampledAt: sampledAt,
 	})
@@ -141,23 +227,132 @@ func (s *Service) RefreshBalance(ctx context.Context, c *storage.Channel) error 
 		map[string]any{"today_cost": costRes.TodayCost, "total_cost": costRes.TotalCost})
 
 	if c.BalanceThreshold > 0 && res.Balance < c.BalanceThreshold {
-		body := fmt.Sprintf("当前余额: %.4f，阈值: %.4f", res.Balance, c.BalanceThreshold)
+		label := s.accountLabel(c)
+		body := fmt.Sprintf("账号：%s\n当前余额: %.4f，阈值: %.4f", label, res.Balance, c.BalanceThreshold)
 		_ = s.dispatcher.Dispatch(ctx, notify.Message{
-			Event:     storage.EventBalanceLow,
-			ChannelID: c.ID,
-			Subject:   fmt.Sprintf("%s 余额低于阈值", c.Name),
-			Body:      body,
+			Event:      storage.EventBalanceLow,
+			AccountID:  c.ID,
+			SiteID:     c.SiteID,
+			AccountIDs: []uint{c.ID},
+			Subject:    fmt.Sprintf("%s 余额低于阈值", label),
+			Body:       body,
 		})
 	}
 	return nil
 }
 
-// RefreshRates 单个渠道倍率刷新，可被 API 手动触发。
-func (s *Service) RefreshRates(ctx context.Context, c *storage.Channel) error {
+// RefreshRates 单个账号倍率刷新，可被 API 手动触发。
+func (s *Service) RefreshRates(ctx context.Context, c *storage.UpstreamAccount) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	scanRunID := newRateScanRunID()
+	result, err := s.collectRateChanges(ctx, c, scanRunID)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.sites == nil {
+		return errors.New("站点服务未配置")
+	}
+	site, err := s.sites.FindByID(c.SiteID)
+	if err != nil {
+		return err
+	}
+	if len(result.RateChanges) > 0 {
+		_ = s.dispatcher.DispatchSiteRateBatch(ctx, *site, result.RateChanges, nil)
+	}
+	if len(result.StructureChanges) > 0 {
+		_ = s.dispatcher.DispatchSiteRateStructureBatch(ctx, *site, result.StructureChanges, nil)
+	}
+	if err := s.syncSiteAnnouncements(ctx, site); err != nil {
+		s.log.Warn("sync site announcements failed", "site", site.Name, "err", err)
+	}
+	return nil
+}
+
+type rateScanResult struct {
+	RateChanges      []notify.SiteRateChange
+	StructureChanges []notify.SiteRateChange
+}
+
+type SiteAccountSyncResult struct {
+	AccountID   uint   `json:"account_id"`
+	AccountName string `json:"account_name"`
+	Success     bool   `json:"success"`
+	Error       string `json:"error,omitempty"`
+}
+
+// SyncSite 手动刷新站点内全部账号。各账号独立成功或失败，倍率变化在站点批次结束后聚合。
+func (s *Service) SyncSite(ctx context.Context, siteID uint) ([]SiteAccountSyncResult, error) {
+	if s.sites == nil {
+		return nil, errors.New("站点服务未配置")
+	}
+	site, err := s.sites.FindByID(siteID)
+	if err != nil {
+		return nil, err
+	}
+	accounts, err := s.sites.ListAccounts(siteID)
+	if err != nil {
+		return nil, err
+	}
+	scanRunID := newRateScanRunID()
+	results := make([]SiteAccountSyncResult, 0, len(accounts))
+	var rateChanges, structureChanges []notify.SiteRateChange
+	failures := make([]string, 0)
+	for i := range accounts {
+		account := accounts[i]
+		balanceErr := s.RefreshBalance(ctx, &account)
+		var subscriptionErr error
+		if balanceErr == nil {
+			subscriptionErr = s.CheckSubscriptionUsageAlerts(ctx, &account)
+		}
+		rateResult, rateErr := s.collectRateChanges(ctx, &account, scanRunID)
+		rateChanges = append(rateChanges, rateResult.RateChanges...)
+		structureChanges = append(structureChanges, rateResult.StructureChanges...)
+		combinedErr := errors.Join(balanceErr, subscriptionErr, rateErr)
+		item := SiteAccountSyncResult{AccountID: account.ID, AccountName: account.Alias, Success: combinedErr == nil}
+		if combinedErr != nil {
+			item.Error = combinedErr.Error()
+			failures = append(failures, fmt.Sprintf("%s：%v", account.Alias, combinedErr))
+		}
+		results = append(results, item)
+	}
+	if len(rateChanges) > 0 {
+		_ = s.dispatcher.DispatchSiteRateBatch(ctx, *site, rateChanges, failures)
+	}
+	if len(structureChanges) > 0 {
+		_ = s.dispatcher.DispatchSiteRateStructureBatch(ctx, *site, structureChanges, failures)
+	}
+	if err := s.syncSiteAnnouncements(ctx, site); err != nil {
+		failures = append(failures, "公告："+err.Error())
+	}
+	return results, errors.Join(stringsToErrors(failures)...)
+}
+
+func stringsToErrors(items []string) []error {
+	out := make([]error, 0, len(items))
+	for _, item := range items {
+		out = append(out, errors.New(item))
+	}
+	return out
+}
+
+func newRateScanRunID() string {
+	return strconv.FormatInt(time.Now().UnixNano(), 36) + "-" + strconv.FormatUint(rateScanSequence.Add(1), 36)
+}
+
+func (s *Service) collectRateChanges(ctx context.Context, c *storage.UpstreamAccount, scanRunID string) (rateScanResult, error) {
+	var output rateScanResult
+	if err := ctx.Err(); err != nil {
+		return output, err
+	}
 	resolved, conn, session, err := s.prepare(ctx, c)
 	if err != nil {
 		s.notifyError(ctx, c, storage.EventLoginFailed, "登录失败", err)
-		return err
+		return output, err
 	}
 
 	progress.Start(ctx, progress.StageRates, "拉取分组倍率…")
@@ -165,7 +360,7 @@ func (s *Service) RefreshRates(ctx context.Context, c *storage.Channel) error {
 	results, err := conn.GetRates(ctx, resolved, session)
 	finished := time.Now()
 	_ = s.monitorLogs.Append(&storage.MonitorLog{
-		ChannelID:    c.ID,
+		AccountID:    c.ID,
 		Job:          storage.MonitorJobRates,
 		Success:      err == nil,
 		ErrorMessage: errString(err),
@@ -175,26 +370,30 @@ func (s *Service) RefreshRates(ctx context.Context, c *storage.Channel) error {
 	if err != nil {
 		progress.Fail(ctx, progress.StageRates, err.Error())
 		s.notifyError(ctx, c, storage.EventMonitorFailed, "倍率采集失败", err)
-		return err
+		return output, err
 	}
 
 	now := time.Now()
-	existing, err := s.rates.ListByChannel(c.ID)
+	existing, err := s.rates.ListByAccount(c.ID)
 	if err != nil {
-		return err
+		return output, err
 	}
 	isFirstSync := len(existing) == 0
-	existingByName := make(map[string]storage.RateSnapshot, len(existing))
+	existingByKey := make(map[string]storage.RateSnapshot, len(existing))
 	for _, snapshot := range existing {
-		existingByName[snapshot.ModelName] = snapshot
+		key := snapshot.StableGroupKey
+		if key == "" {
+			key = storage.StableRateGroupKey(snapshot.RemoteGroupID, snapshot.ModelName)
+		}
+		existingByKey[key] = snapshot
 	}
 	seen := make(map[string]struct{}, len(results))
-	changes := make([]notify.RateChange, 0, len(results))
-	added := make([]notify.RateChange, 0)
 	for _, r := range results {
-		seen[r.ModelName] = struct{}{}
+		stableKey := storage.StableRateGroupKey(r.GroupID, r.ModelName)
+		seen[stableKey] = struct{}{}
 		prev, err := s.rates.Upsert(&storage.RateSnapshot{
-			ChannelID:       c.ID,
+			AccountID:       c.ID,
+			StableGroupKey:  stableKey,
 			RemoteGroupID:   r.GroupID,
 			ModelName:       r.ModelName,
 			Description:     r.Description,
@@ -203,16 +402,17 @@ func (s *Service) RefreshRates(ctx context.Context, c *storage.Channel) error {
 			LastSeenAt:      now,
 		})
 		if err != nil {
-			s.log.Warn("rate upsert failed", "channel", c.Name, "model", r.ModelName, "err", err)
+			s.log.Warn("rate upsert failed", "account", c.Alias, "model", r.ModelName, "err", err)
 			continue
 		}
 		if prev == nil {
 			if !isFirstSync {
-				added = append(added, notify.RateChange{
-					GroupName: r.ModelName,
-					NewRatio:  r.Ratio,
-					NewComp:   r.CompletionRatio,
-					ChangedAt: now,
+				change := siteRateChange(c, scanRunID, stableKey, "added", notify.RateChange{GroupName: r.ModelName, NewRatio: r.Ratio, NewComp: r.CompletionRatio, ChangedAt: now})
+				output.StructureChanges = append(output.StructureChanges, change)
+				_ = s.rates.AppendChange(&storage.RateChangeLog{
+					SiteID: c.SiteID, AccountID: c.ID, ScanRunID: scanRunID,
+					StableGroupKey: stableKey, ChangeType: "added", ModelName: r.ModelName,
+					NewRatio: r.Ratio, NewCompletionRatio: r.CompletionRatio, ChangedAt: now,
 				})
 			}
 			continue
@@ -223,7 +423,11 @@ func (s *Service) RefreshRates(ctx context.Context, c *storage.Channel) error {
 		oldRatio := prev.Ratio
 		oldComp := prev.CompletionRatio
 		_ = s.rates.AppendChange(&storage.RateChangeLog{
-			ChannelID:          c.ID,
+			SiteID:             c.SiteID,
+			AccountID:          c.ID,
+			ScanRunID:          scanRunID,
+			StableGroupKey:     stableKey,
+			ChangeType:         "ratio_changed",
 			ModelName:          r.ModelName,
 			OldRatio:           &oldRatio,
 			NewRatio:           r.Ratio,
@@ -231,51 +435,65 @@ func (s *Service) RefreshRates(ctx context.Context, c *storage.Channel) error {
 			NewCompletionRatio: r.CompletionRatio,
 			ChangedAt:          now,
 		})
-		changes = append(changes, notify.RateChange{
+		output.RateChanges = append(output.RateChanges, siteRateChange(c, scanRunID, stableKey, "ratio_changed", notify.RateChange{
 			GroupName: r.ModelName,
 			OldRatio:  oldRatio,
 			NewRatio:  r.Ratio,
 			OldComp:   oldComp,
 			NewComp:   r.CompletionRatio,
 			ChangedAt: now,
-		})
+		}))
 	}
-	removed := make([]notify.RateChange, 0)
-	for _, snapshot := range existingByName {
-		if _, ok := seen[snapshot.ModelName]; ok {
+	for stableKey, snapshot := range existingByKey {
+		if _, ok := seen[stableKey]; ok {
 			continue
 		}
-		if err := s.rates.DeleteSnapshot(c.ID, snapshot.ModelName); err != nil {
-			s.log.Warn("rate delete failed", "channel", c.Name, "model", snapshot.ModelName, "err", err)
+		if err := s.rates.DeleteSnapshotByKey(c.ID, stableKey); err != nil {
+			s.log.Warn("rate delete failed", "account", c.Alias, "model", snapshot.ModelName, "err", err)
 			continue
 		}
-		removed = append(removed, notify.RateChange{
+		change := siteRateChange(c, scanRunID, stableKey, "removed", notify.RateChange{
 			GroupName: snapshot.ModelName,
 			OldRatio:  snapshot.Ratio,
 			OldComp:   snapshot.CompletionRatio,
 			ChangedAt: now,
 		})
-	}
-	// 一次扫描的所有变化打包推送：去抖策略（合并 / 涨跌幅过滤）由 Dispatcher.Policy 决定。
-	if len(changes) > 0 {
-		_ = s.dispatcher.DispatchRateBatch(ctx, c, changes)
-	}
-	if len(added)+len(removed) > 0 {
-		_ = s.dispatcher.DispatchRateStructureBatch(ctx, c, notify.RateStructureChange{
-			Added:   added,
-			Removed: removed,
+		output.StructureChanges = append(output.StructureChanges, change)
+		oldRatio := snapshot.Ratio
+		oldComp := snapshot.CompletionRatio
+		_ = s.rates.AppendChange(&storage.RateChangeLog{
+			SiteID: c.SiteID, AccountID: c.ID, ScanRunID: scanRunID,
+			StableGroupKey: stableKey, ChangeType: "removed", ModelName: snapshot.ModelName,
+			OldRatio: &oldRatio, OldCompletionRatio: &oldComp, ChangedAt: now,
 		})
 	}
-	if err := s.syncAnnouncements(ctx, c, resolved, conn, session); err != nil {
-		s.log.Warn("sync announcements failed", "channel", c.Name, "err", err)
-	}
 	progress.OK(ctx, progress.StageRates, fmt.Sprintf("拉到 %d 个分组", len(results)),
-		map[string]any{"count": len(results)})
-	return nil
+		map[string]any{"count": len(results), "scan_run_id": scanRunID})
+	return output, nil
 }
 
-func (s *Service) CheckSubscriptionUsageAlerts(ctx context.Context, c *storage.Channel) error {
-	if c == nil || !c.MonitorEnabled || !c.SubscriptionEnabled || c.Type != storage.ChannelTypeSub2API {
+func siteRateChange(c *storage.UpstreamAccount, scanRunID, stableKey, changeType string, change notify.RateChange) notify.SiteRateChange {
+	return notify.SiteRateChange{
+		SiteID: c.SiteID, AccountID: c.ID, AccountName: c.Alias,
+		ScanRunID: scanRunID, StableKey: stableKey, ChangeType: changeType, RateChange: change,
+	}
+}
+
+func (s *Service) CheckSubscriptionUsageAlerts(ctx context.Context, c *storage.UpstreamAccount) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c == nil || !c.MonitorEnabled || !c.SubscriptionEnabled {
+		return nil
+	}
+	if s.sites == nil {
+		return errors.New("站点服务未配置")
+	}
+	site, err := s.sites.FindByID(c.SiteID)
+	if err != nil {
+		return err
+	}
+	if site.Type != storage.UpstreamTypeSub2API {
 		return nil
 	}
 	policy := s.dispatcher.Policy()
@@ -285,7 +503,7 @@ func (s *Service) CheckSubscriptionUsageAlerts(ctx context.Context, c *storage.C
 		policy.SubscriptionExpiryThreshold <= 0 {
 		return nil
 	}
-	info, err := s.channelSvc.GetSubscriptionUsage(ctx, c.ID)
+	info, err := s.accountSvc.GetSubscriptionUsage(ctx, c.ID)
 	if err != nil {
 		progress.Fail(ctx, progress.StageSubscription, err.Error())
 		s.notifyError(ctx, c, storage.EventMonitorFailed, "订阅用量采集失败", err)
@@ -306,7 +524,7 @@ func (s *Service) CheckSubscriptionUsageAlerts(ctx context.Context, c *storage.C
 	return nil
 }
 
-func (s *Service) dispatchSubscriptionWindowAlert(ctx context.Context, c *storage.Channel, event storage.NotificationEvent, label string, threshold float64, items []connector.SubscriptionUsage, pick func(connector.SubscriptionUsage) *connector.SubscriptionUsageWindow) {
+func (s *Service) dispatchSubscriptionWindowAlert(ctx context.Context, c *storage.UpstreamAccount, event storage.NotificationEvent, label string, threshold float64, items []connector.SubscriptionUsage, pick func(connector.SubscriptionUsage) *connector.SubscriptionUsageWindow) {
 	if threshold <= 0 {
 		return
 	}
@@ -326,16 +544,19 @@ func (s *Service) dispatchSubscriptionWindowAlert(ctx context.Context, c *storag
 	if len(lines) == 0 {
 		return
 	}
-	body := fmt.Sprintf("渠道：%s\n维度：%s\n阈值：剩余 %.1f%%\n%s", c.Name, label, threshold, strings.Join(lines, "\n"))
+	accountName := s.accountLabel(c)
+	body := fmt.Sprintf("账号：%s\n维度：%s\n阈值：剩余 %.1f%%\n%s", accountName, label, threshold, strings.Join(lines, "\n"))
 	_ = s.dispatcher.Dispatch(ctx, notify.Message{
-		Event:     event,
-		ChannelID: c.ID,
-		Subject:   fmt.Sprintf("%s 订阅%s剩余额度不足", c.Name, label),
-		Body:      body,
+		Event:      event,
+		AccountID:  c.ID,
+		SiteID:     c.SiteID,
+		AccountIDs: []uint{c.ID},
+		Subject:    fmt.Sprintf("%s 订阅%s剩余额度不足", accountName, label),
+		Body:       body,
 	})
 }
 
-func (s *Service) dispatchSubscriptionExpiryAlert(ctx context.Context, c *storage.Channel, threshold time.Duration, items []connector.SubscriptionUsage) {
+func (s *Service) dispatchSubscriptionExpiryAlert(ctx context.Context, c *storage.UpstreamAccount, threshold time.Duration, items []connector.SubscriptionUsage) {
 	if threshold <= 0 {
 		return
 	}
@@ -355,12 +576,15 @@ func (s *Service) dispatchSubscriptionExpiryAlert(ctx context.Context, c *storag
 	if len(lines) == 0 {
 		return
 	}
-	body := fmt.Sprintf("渠道：%s\n类型：订阅即将到期\n阈值：剩余 %.0f 小时\n%s", c.Name, threshold.Hours(), strings.Join(lines, "\n"))
+	accountName := s.accountLabel(c)
+	body := fmt.Sprintf("账号：%s\n类型：订阅即将到期\n阈值：剩余 %.0f 小时\n%s", accountName, threshold.Hours(), strings.Join(lines, "\n"))
 	_ = s.dispatcher.Dispatch(ctx, notify.Message{
-		Event:     storage.EventSubscriptionExpiring,
-		ChannelID: c.ID,
-		Subject:   fmt.Sprintf("%s 订阅即将到期", c.Name),
-		Body:      body,
+		Event:      storage.EventSubscriptionExpiring,
+		AccountID:  c.ID,
+		SiteID:     c.SiteID,
+		AccountIDs: []uint{c.ID},
+		Subject:    fmt.Sprintf("%s 订阅即将到期", accountName),
+		Body:       body,
 	})
 }
 
@@ -385,8 +609,8 @@ func formatDurationHours(d time.Duration) string {
 	return fmt.Sprintf("%.1f 小时", hours)
 }
 
-func (s *Service) prepare(ctx context.Context, c *storage.Channel) (*connector.Channel, connector.Connector, *connector.AuthSession, error) {
-	resolved, err := s.channelSvc.Resolve(ctx, c)
+func (s *Service) prepare(ctx context.Context, c *storage.UpstreamAccount) (*connector.AccountTarget, connector.Connector, *connector.AuthSession, error) {
+	resolved, err := s.accountSvc.Resolve(ctx, c)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -394,42 +618,87 @@ func (s *Service) prepare(ctx context.Context, c *storage.Channel) (*connector.C
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	s.channelSvc.ApplyHTTPConfig(conn)
-	s.channelSvc.ApplyProxy(conn, resolved)
-	session, err := s.channelSvc.EnsureSession(ctx, c, resolved, conn)
+	s.accountSvc.ApplyHTTPConfig(conn)
+	s.accountSvc.ApplyProxy(conn, resolved)
+	session, err := s.accountSvc.EnsureSession(ctx, c, resolved, conn)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	return resolved, conn, session, nil
 }
 
-func (s *Service) notifyError(ctx context.Context, c *storage.Channel, event storage.NotificationEvent, subject string, err error) {
+func (s *Service) notifyError(ctx context.Context, c *storage.UpstreamAccount, event storage.NotificationEvent, subject string, err error) {
 	_ = s.dispatcher.Dispatch(ctx, notify.Message{
-		Event:     event,
-		ChannelID: c.ID,
-		Subject:   fmt.Sprintf("%s %s", c.Name, subject),
-		Body:      err.Error(),
+		Event:      event,
+		AccountID:  c.ID,
+		SiteID:     c.SiteID,
+		AccountIDs: []uint{c.ID},
+		Subject:    fmt.Sprintf("%s %s", s.accountLabel(c), subject),
+		Body:       err.Error(),
 	})
 }
 
-func (s *Service) syncAnnouncements(ctx context.Context, c *storage.Channel, resolved *connector.Channel, conn connector.Connector, session *connector.AuthSession) error {
-	if s.announcements == nil {
+// accountLabel 返回账号级通知使用的 "站点名称 / 账号别名"，
+// 保证跨站点同名账号在告警里可区分；站点解析失败时退化为账号别名。
+func (s *Service) accountLabel(c *storage.UpstreamAccount) string {
+	if s.sites != nil {
+		if site, err := s.sites.FindByID(c.SiteID); err == nil && site != nil && site.Name != "" {
+			return site.Name + " / " + c.Alias
+		}
+	}
+	return c.Alias
+}
+
+func (s *Service) syncSiteAnnouncements(ctx context.Context, site *storage.UpstreamSite) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.announcements == nil || s.sites == nil || site == nil || site.IgnoreAnnouncements {
 		return nil
 	}
-	if c.IgnoreAnnouncements {
-		return nil
+	if site.DefaultAccountID == 0 {
+		return errors.New("站点没有默认账号，无法读取公告")
 	}
-	items, err := conn.GetAnnouncements(ctx, resolved, session)
+	account, err := s.accounts.FindByID(site.DefaultAccountID)
 	if err != nil {
 		return err
 	}
+	if account.SiteID != site.ID {
+		return errors.New("默认账号不属于当前站点")
+	}
+	if !account.MonitorEnabled {
+		return errors.New("默认账号监控已暂停，无法读取公告")
+	}
+	resolved, conn, session, err := s.prepare(ctx, account)
+	if err != nil {
+		return fmt.Errorf("默认账号读取站点公告失败: %w", err)
+	}
+	items, err := conn.GetAnnouncements(ctx, resolved, session)
+	if err != nil {
+		return fmt.Errorf("读取站点公告失败: %w", err)
+	}
+	return s.storeAnnouncements(ctx, site.ID, site.Name, account, items)
+}
+
+func (s *Service) scanStopped(ctx context.Context, task string) bool {
+	if ctx == nil || ctx.Err() == nil {
+		return false
+	}
+	if s.log != nil {
+		s.log.Info("monitor scan stopped because context is done", "task", task, "err", ctx.Err())
+	}
+	return true
+}
+
+func (s *Service) storeAnnouncements(ctx context.Context, siteID uint, siteName string, c *storage.UpstreamAccount, items []connector.AnnouncementResult) error {
 	if len(items) == 0 {
 		return nil
 	}
 	records := make([]storage.UpstreamAnnouncement, 0, len(items))
 	for _, item := range items {
 		records = append(records, storage.UpstreamAnnouncement{
-			ChannelID:       c.ID,
+			SiteID:          siteID,
+			AccountID:       c.ID,
 			SourceKey:       item.SourceKey,
 			Title:           item.Title,
 			Content:         item.Content,
@@ -439,11 +708,11 @@ func (s *Service) syncAnnouncements(ctx context.Context, c *storage.Channel, res
 			SourceUpdatedAt: item.SourceUpdatedAt,
 		})
 	}
-	existingCount, err := s.announcements.CountByChannel(c.ID)
+	existingCount, err := s.announcements.CountBySite(siteID)
 	if err != nil {
 		return err
 	}
-	newRecords, err := s.announcements.Sync(c.ID, records)
+	newRecords, err := s.announcements.SyncSite(siteID, c.ID, records)
 	if err != nil {
 		return err
 	}
@@ -453,23 +722,26 @@ func (s *Service) syncAnnouncements(ctx context.Context, c *storage.Channel, res
 	for i := range newRecords {
 		rec := newRecords[i]
 		_ = s.dispatcher.Dispatch(ctx, notify.Message{
-			Event:     storage.EventAnnouncement,
-			ChannelID: c.ID,
-			Subject:   announcementSubject(c, rec),
-			Body:      announcementBody(c, rec),
+			Event:      storage.EventAnnouncement,
+			AccountID:  c.ID,
+			SiteID:     siteID,
+			AccountIDs: []uint{c.ID},
+			Subject:    announcementSubject(siteName, rec),
+			Body:       announcementBody(rec),
 			Extra: map[string]any{
-				"announcement_id": rec.ID,
-				"source_key":      rec.SourceKey,
-				"title":           rec.Title,
-				"type":            rec.Type,
-				"link":            rec.Link,
+				"announcement_id":   rec.ID,
+				"source_key":        rec.SourceKey,
+				"title":             rec.Title,
+				"type":              rec.Type,
+				"link":              rec.Link,
+				"source_account_id": c.ID,
 			},
 		})
 	}
 	return nil
 }
 
-func announcementSubject(c *storage.Channel, a storage.UpstreamAnnouncement) string {
+func announcementSubject(siteName string, a storage.UpstreamAnnouncement) string {
 	title := strings.TrimSpace(a.Title)
 	if title == "" {
 		title = strings.TrimSpace(a.Content)
@@ -480,10 +752,10 @@ func announcementSubject(c *storage.Channel, a storage.UpstreamAnnouncement) str
 	if len([]rune(title)) > 40 {
 		title = string([]rune(title)[:40])
 	}
-	return fmt.Sprintf("%s 公告 · %s", c.Name, title)
+	return fmt.Sprintf("%s 公告 · %s", siteName, title)
 }
 
-func announcementBody(c *storage.Channel, a storage.UpstreamAnnouncement) string {
+func announcementBody(a storage.UpstreamAnnouncement) string {
 	var b strings.Builder
 	if a.Content != "" {
 		b.WriteString(a.Content)

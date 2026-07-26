@@ -10,6 +10,9 @@ type Captchas struct{ db *gorm.DB }
 
 func NewCaptchas(db *gorm.DB) *Captchas { return &Captchas{db: db} }
 
+// WithDB returns a repository bound to db, typically a transaction handle.
+func (r *Captchas) WithDB(db *gorm.DB) *Captchas { return NewCaptchas(db) }
+
 func (r *Captchas) List() ([]CaptchaConfig, error) {
 	var list []CaptchaConfig
 	if err := r.db.Order("id ASC").Find(&list).Error; err != nil {
@@ -21,6 +24,14 @@ func (r *Captchas) List() ([]CaptchaConfig, error) {
 func (r *Captchas) FindByID(id uint) (*CaptchaConfig, error) {
 	var c CaptchaConfig
 	if err := r.db.First(&c, id).Error; err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (r *Captchas) FindByName(name string) (*CaptchaConfig, error) {
+	var c CaptchaConfig
+	if err := r.db.Where("name = ?", name).First(&c).Error; err != nil {
 		return nil, err
 	}
 	return &c, nil

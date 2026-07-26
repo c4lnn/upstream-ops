@@ -2,737 +2,238 @@ package monitor
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
-	"github.com/bejix/upstream-ops/backend/channel"
+	"github.com/bejix/upstream-ops/backend/account"
 	_ "github.com/bejix/upstream-ops/backend/connector/newapi"
-	_ "github.com/bejix/upstream-ops/backend/connector/sub2api"
 	"github.com/bejix/upstream-ops/backend/crypto"
 	"github.com/bejix/upstream-ops/backend/notify"
 	"github.com/bejix/upstream-ops/backend/storage"
 	"gorm.io/gorm"
 )
 
+func TestSyncSiteAnnouncementsUsesOnlyDefaultAccount(t *testing.T) {
+	db := openTestDB(t)
+	accounts := storage.NewUpstreamAccounts(db)
+	sites := storage.NewUpstreamSites(db)
+	sessions := storage.NewAuthSessions(db)
+	announcements := storage.NewUpstreamAnnouncements(db)
+	rates := storage.NewRates(db)
+	monitorLogs := storage.NewMonitorLogs(db)
+	cipher, err := crypto.NewCipher("monitor-test-secret")
+	if err != nil {
+		t.Fatalf("new cipher: %v", err)
+	}
+
+	var defaultAttempts atomic.Int32
+	var backupAttempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Header.Get("Cookie") {
+		case "session=default":
+			defaultAttempts.Add(1)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		case "session=backup":
+			backupAttempts.Add(1)
+			_, _ = w.Write([]byte(`{"success":true,"data":{"id":2}}`))
+		default:
+			http.Error(w, "missing session", http.StatusUnauthorized)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	site := &storage.UpstreamSite{Name: "site", Type: storage.UpstreamTypeNewAPI, BaseURL: server.URL}
+	if err := sites.Create(site); err != nil {
+		t.Fatalf("create site: %v", err)
+	}
+	defaultAccount := &storage.UpstreamAccount{
+		SiteID: site.ID, Alias: "default", Username: "default", CredentialMode: storage.CredentialModeToken,
+		PasswordCipher: encrypt(t, cipher, `{"cookie":"session=default","user_id":"1"}`), MonitorEnabled: true,
+	}
+	backupAccount := &storage.UpstreamAccount{
+		SiteID: site.ID, Alias: "backup", Username: "backup", CredentialMode: storage.CredentialModeToken,
+		PasswordCipher: encrypt(t, cipher, `{"cookie":"session=backup","user_id":"2"}`), MonitorEnabled: true,
+	}
+	if err := sites.AddAccount(defaultAccount); err != nil {
+		t.Fatalf("add default account: %v", err)
+	}
+	if err := sites.AddAccount(backupAccount); err != nil {
+		t.Fatalf("add backup account: %v", err)
+	}
+	site, err = sites.FindByID(site.ID)
+	if err != nil {
+		t.Fatalf("reload site: %v", err)
+	}
+
+	accountSvc := account.NewService(accounts, sessions, storage.NewCaptchas(db), rates, monitorLogs, cipher)
+	accountSvc.SetSites(sites)
+	service := NewService(accounts, announcements, rates, monitorLogs, accountSvc,
+		notify.NewDispatcher(storage.NewNotifications(db), cipher, testLogger(), notify.Policy{SendMaxAttempts: 1}), testLogger())
+	service.SetSites(sites)
+
+	if err := service.syncSiteAnnouncements(context.Background(), site); err == nil {
+		t.Fatal("expected default account authentication failure")
+	}
+	if defaultAttempts.Load() != 1 {
+		t.Fatalf("default account attempts = %d, want 1", defaultAttempts.Load())
+	}
+	if backupAttempts.Load() != 0 {
+		t.Fatalf("backup account attempts = %d, want 0; cross-account fallback is forbidden", backupAttempts.Load())
+	}
+}
+
+func TestSiteRateChangeKeepsSiteAndAccountScope(t *testing.T) {
+	account := &storage.UpstreamAccount{ID: 7, SiteID: 3, Alias: "primary"}
+	change := siteRateChange(account, "run-1", "id:1", "ratio_changed", notify.RateChange{GroupName: "default"})
+	if change.SiteID != 3 || change.AccountID != 7 || change.AccountName != "primary" {
+		t.Fatalf("scope = %#v", change)
+	}
+}
+
+func TestCheckSubscriptionUsageSkipsNonSub2APISite(t *testing.T) {
+	db := openTestDB(t)
+	accounts := storage.NewUpstreamAccounts(db)
+	sites := storage.NewUpstreamSites(db)
+	cipher, err := crypto.NewCipher("monitor-test-secret")
+	if err != nil {
+		t.Fatalf("new cipher: %v", err)
+	}
+	site := &storage.UpstreamSite{Name: "newapi", Type: storage.UpstreamTypeNewAPI, BaseURL: "https://example.com"}
+	if err := sites.Create(site); err != nil {
+		t.Fatalf("create site: %v", err)
+	}
+	upstreamAccount := &storage.UpstreamAccount{
+		SiteID: site.ID, Alias: "account", Username: "account", PasswordCipher: encrypt(t, cipher, "password"),
+		CredentialMode: storage.CredentialModePassword, MonitorEnabled: true, SubscriptionEnabled: true,
+	}
+	if err := accounts.Create(upstreamAccount); err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	accountSvc := account.NewService(accounts, storage.NewAuthSessions(db), storage.NewCaptchas(db), storage.NewRates(db), storage.NewMonitorLogs(db), cipher)
+	accountSvc.SetSites(sites)
+	service := NewService(accounts, storage.NewUpstreamAnnouncements(db), storage.NewRates(db), storage.NewMonitorLogs(db), accountSvc,
+		notify.NewDispatcher(storage.NewNotifications(db), cipher, testLogger(), notify.Policy{SubscriptionDailyRemainingThresholdPct: 10}), testLogger())
+	service.SetSites(sites)
+	if err := service.CheckSubscriptionUsageAlerts(context.Background(), upstreamAccount); err != nil {
+		t.Fatalf("non-Sub2API account should be skipped: %v", err)
+	}
+}
+
+func TestAccountNotificationsDistinguishSameAliasAcrossSites(t *testing.T) {
+	db := openTestDB(t)
+	sites := storage.NewUpstreamSites(db)
+	notifications := storage.NewNotifications(db)
+	cipher, err := crypto.NewCipher("monitor-test-secret")
+	if err != nil {
+		t.Fatalf("new cipher: %v", err)
+	}
+
+	firstSite := &storage.UpstreamSite{Name: "first", Type: storage.UpstreamTypeNewAPI, BaseURL: "https://first.example.com"}
+	if err := sites.Create(firstSite); err != nil {
+		t.Fatalf("create first site: %v", err)
+	}
+	secondSite := &storage.UpstreamSite{Name: "second", Type: storage.UpstreamTypeSub2API, BaseURL: "https://second.example.com"}
+	if err := sites.Create(secondSite); err != nil {
+		t.Fatalf("create second site: %v", err)
+	}
+	firstAccount := &storage.UpstreamAccount{
+		SiteID: firstSite.ID, Alias: "primary", Username: "first-user",
+		PasswordCipher: encrypt(t, cipher, "password"),
+	}
+	if err := sites.AddAccount(firstAccount); err != nil {
+		t.Fatalf("add first account: %v", err)
+	}
+	secondAccount := &storage.UpstreamAccount{
+		SiteID: secondSite.ID, Alias: "primary", Username: "second-user",
+		PasswordCipher: encrypt(t, cipher, "password"),
+	}
+	if err := sites.AddAccount(secondAccount); err != nil {
+		t.Fatalf("add second account: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	channel := &storage.NotificationChannel{
+		Name: "hook", Type: storage.NotifyWebhook,
+		ConfigCipher: encrypt(t, cipher, `{"url":"`+server.URL+`"}`), Enabled: true,
+	}
+	if err := notifications.CreateChannel(channel); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	service := &Service{
+		sites:      sites,
+		dispatcher: notify.NewDispatcher(notifications, cipher, testLogger(), notify.Policy{SendMaxAttempts: 1}),
+		log:        testLogger(),
+	}
+	service.notifyError(context.Background(), firstAccount, storage.EventLoginFailed, "登录失败", errors.New("boom"))
+	service.notifyError(context.Background(), secondAccount, storage.EventLoginFailed, "登录失败", errors.New("boom"))
+
+	logs, err := notifications.ListLogs(10)
+	if err != nil {
+		t.Fatalf("list notification logs: %v", err)
+	}
+	if len(logs) != 2 {
+		t.Fatalf("logs = %#v", logs)
+	}
+	subjects := make(map[string]bool, len(logs))
+	for _, item := range logs {
+		if !item.Success {
+			t.Fatalf("notification send failed: %#v", item)
+		}
+		subjects[item.Subject] = true
+	}
+	if !subjects["first / primary 登录失败"] || !subjects["second / primary 登录失败"] {
+		t.Fatalf("subjects lack site identity: %#v", subjects)
+	}
+
+	orphan := &storage.UpstreamAccount{ID: 999, SiteID: 9999, Alias: "primary"}
+	if got := service.accountLabel(orphan); got != "primary" {
+		t.Fatalf("orphan label = %q, want bare alias fallback", got)
+	}
+}
+
+func TestScanAllBalancesStopsBeforeListingWhenContextIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	service := &Service{log: testLogger()}
+	service.ScanAllBalances(ctx)
+}
+
 func openTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := storage.Open(storage.DBConfig{
-		Driver: storage.DBDriverSQLite,
-		Path:   filepath.Join(t.TempDir(), "monitor-test.db"),
-	})
+	db, err := storage.Open(storage.DBConfig{Driver: storage.DBDriverSQLite, Path: filepath.Join(t.TempDir(), "monitor-test.db")})
 	if err != nil {
-		t.Fatalf("open test db: %v", err)
+		t.Fatalf("open db: %v", err)
 	}
 	if err := storage.AutoMigrate(db); err != nil {
-		t.Fatalf("auto migrate: %v", err)
+		t.Fatalf("migrate db: %v", err)
 	}
 	sqlDB, err := db.DB()
 	if err != nil {
-		t.Fatalf("db handle: %v", err)
+		t.Fatalf("database handle: %v", err)
 	}
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	return db
 }
 
-func TestRefreshRatesSyncAnnouncementsAndNotify(t *testing.T) {
-	db := openTestDB(t)
-	channels := storage.NewChannels(db)
-	authSessions := storage.NewAuthSessions(db)
-	captchas := storage.NewCaptchas(db)
-	announcements := storage.NewUpstreamAnnouncements(db)
-	rates := storage.NewRates(db)
-	monitorLogs := storage.NewMonitorLogs(db)
-	notifies := storage.NewNotifications(db)
-	cipher, err := crypto.NewCipher("secret")
-	if err != nil {
-		t.Fatalf("cipher: %v", err)
-	}
-
-	var webhookHits atomic.Int32
-	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		webhookHits.Add(1)
-		var body struct {
-			Event string `json:"event"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode webhook: %v", err)
-		}
-		if body.Event != string(storage.EventAnnouncement) {
-			t.Fatalf("webhook event = %q, want announcement", body.Event)
-		}
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	defer webhookSrv.Close()
-
-	if err := notifies.CreateChannel(&storage.NotificationChannel{
-		Name:         "webhook",
-		Type:         storage.NotifyWebhook,
-		ConfigCipher: mustEncrypt(t, cipher, `{"url":"`+webhookSrv.URL+`"}`),
-	}); err != nil {
-		t.Fatalf("create notify channel: %v", err)
-	}
-
-	var statusCalls atomic.Int32
-	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/status":
-			call := statusCalls.Add(1)
-			id := 1
-			title := "公告一"
-			content := "首次公告"
-			if call >= 2 {
-				id = 2
-				title = "公告二"
-				content = "新增公告"
-			}
-			_, _ = w.Write([]byte(`{"success":true,"message":"","data":{"quota_per_unit":500000,"announcements":[{"id":` +
-				jsonNumber(id) + `,"title":"` + title + `","content":"` + content + `","type":"warning","publishDate":"2026-01-02T03:04:05Z","updated_at":"2026-01-02T03:04:05Z"}]}}`))
-		case "/api/user/self":
-			if got := r.Header.Get("Cookie"); got != "session=1" {
-				t.Fatalf("cookie = %q", got)
-			}
-			if got := r.Header.Get("New-Api-User"); got != "7" {
-				t.Fatalf("New-Api-User = %q", got)
-			}
-			_, _ = w.Write([]byte(`{"success":true,"message":"","data":{"quota":1000000,"used_quota":500000}}`))
-		case "/api/user/self/groups":
-			_, _ = w.Write([]byte(`{"success":true,"message":"","data":{"default":{"ratio":1,"desc":"default"}}}`))
-		case "/api/notice":
-			_, _ = w.Write([]byte(`{"success":true,"message":"","data":""}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer apiSrv.Close()
-
-	ch := &storage.Channel{
-		Name:           "demo",
-		Type:           storage.ChannelTypeNewAPI,
-		SiteURL:        apiSrv.URL,
-		Username:       "u",
-		PasswordCipher: mustEncrypt(t, cipher, `{"cookie":"session=1","user_id":"7"}`),
-		CredentialMode: storage.CredentialModeToken,
-		MonitorEnabled: true,
-	}
-	if err := channels.Create(ch); err != nil {
-		t.Fatalf("create channel: %v", err)
-	}
-
-	channelSvc := channel.NewService(channels, authSessions, captchas, rates, monitorLogs, cipher)
-	dispatcher := notify.NewDispatcher(notifies, cipher, slog.New(slog.NewTextHandler(io.Discard, nil)), notify.Policy{
-		SendMaxAttempts: 1,
-	})
-	svc := NewService(channels, announcements, rates, monitorLogs, channelSvc, dispatcher, slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-	if err := svc.RefreshRates(context.Background(), ch); err != nil {
-		t.Fatalf("first refresh: %v", err)
-	}
-	if got := webhookHits.Load(); got != 0 {
-		t.Fatalf("first refresh webhook hits = %d, want 0", got)
-	}
-
-	if err := svc.RefreshRates(context.Background(), ch); err != nil {
-		t.Fatalf("second refresh: %v", err)
-	}
-	if got := webhookHits.Load(); got != 1 {
-		t.Fatalf("second refresh webhook hits = %d, want 1", got)
-	}
-
-	logs, err := notifies.ListLogs(10)
-	if err != nil {
-		t.Fatalf("list logs: %v", err)
-	}
-	if len(logs) != 1 || logs[0].Event != storage.EventAnnouncement || !logs[0].Success {
-		t.Fatalf("logs = %#v", logs)
-	}
-}
-
-func TestRefreshRatesSkipsAnnouncementsWhenIgnored(t *testing.T) {
-	db := openTestDB(t)
-	channels := storage.NewChannels(db)
-	authSessions := storage.NewAuthSessions(db)
-	captchas := storage.NewCaptchas(db)
-	announcements := storage.NewUpstreamAnnouncements(db)
-	rates := storage.NewRates(db)
-	monitorLogs := storage.NewMonitorLogs(db)
-	notifies := storage.NewNotifications(db)
-	cipher, err := crypto.NewCipher("secret")
-	if err != nil {
-		t.Fatalf("cipher: %v", err)
-	}
-
-	var webhookHits atomic.Int32
-	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		webhookHits.Add(1)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	defer webhookSrv.Close()
-
-	if err := notifies.CreateChannel(&storage.NotificationChannel{
-		Name:         "webhook",
-		Type:         storage.NotifyWebhook,
-		ConfigCipher: mustEncrypt(t, cipher, `{"url":"`+webhookSrv.URL+`"}`),
-	}); err != nil {
-		t.Fatalf("create notify channel: %v", err)
-	}
-
-	var statusCalls atomic.Int32
-	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/status":
-			statusCalls.Add(1)
-			_, _ = w.Write([]byte(`{"success":true,"message":"","data":{"quota_per_unit":500000,"announcements":[{"id":1,"title":"公告一","content":"首次公告","type":"warning","publishDate":"2026-01-02T03:04:05Z","updated_at":"2026-01-02T03:04:05Z"}]}}`))
-		case "/api/user/self":
-			_, _ = w.Write([]byte(`{"success":true,"message":"","data":{"quota":1000000,"used_quota":500000}}`))
-		case "/api/user/self/groups":
-			_, _ = w.Write([]byte(`{"success":true,"message":"","data":{"default":{"ratio":1,"desc":"default"}}}`))
-		case "/api/notice":
-			_, _ = w.Write([]byte(`{"success":true,"message":"","data":""}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer apiSrv.Close()
-
-	ch := &storage.Channel{
-		Name:                "demo",
-		Type:                storage.ChannelTypeNewAPI,
-		SiteURL:             apiSrv.URL,
-		Username:            "u",
-		PasswordCipher:      mustEncrypt(t, cipher, `{"cookie":"session=1","user_id":"7"}`),
-		CredentialMode:      storage.CredentialModeToken,
-		MonitorEnabled:      true,
-		IgnoreAnnouncements: true,
-	}
-	if err := channels.Create(ch); err != nil {
-		t.Fatalf("create channel: %v", err)
-	}
-
-	channelSvc := channel.NewService(channels, authSessions, captchas, rates, monitorLogs, cipher)
-	dispatcher := notify.NewDispatcher(notifies, cipher, slog.New(slog.NewTextHandler(io.Discard, nil)), notify.Policy{SendMaxAttempts: 1})
-	svc := NewService(channels, announcements, rates, monitorLogs, channelSvc, dispatcher, slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-	if err := svc.RefreshRates(context.Background(), ch); err != nil {
-		t.Fatalf("refresh: %v", err)
-	}
-	list, total, err := announcements.ListPage(1, 10)
-	if err != nil {
-		t.Fatalf("list announcements: %v", err)
-	}
-	if total != 0 || len(list) != 0 {
-		t.Fatalf("announcements should be skipped: total=%d list=%#v", total, list)
-	}
-	if got := statusCalls.Load(); got != 0 {
-		t.Fatalf("status calls = %d, want 0", got)
-	}
-	logs, err := notifies.ListLogs(10)
-	if err != nil {
-		t.Fatalf("list logs: %v", err)
-	}
-	if len(logs) != 0 {
-		t.Fatalf("notification logs = %#v", logs)
-	}
-}
-
-func TestRefreshRatesEmitsRateAddedAndRemoved(t *testing.T) {
-	db := openTestDB(t)
-	channels := storage.NewChannels(db)
-	authSessions := storage.NewAuthSessions(db)
-	captchas := storage.NewCaptchas(db)
-	announcements := storage.NewUpstreamAnnouncements(db)
-	rates := storage.NewRates(db)
-	monitorLogs := storage.NewMonitorLogs(db)
-	notifies := storage.NewNotifications(db)
-	cipher, err := crypto.NewCipher("secret")
-	if err != nil {
-		t.Fatalf("cipher: %v", err)
-	}
-
-	var webhookHits atomic.Int32
-	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		webhookHits.Add(1)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	defer webhookSrv.Close()
-
-	if err := notifies.CreateChannel(&storage.NotificationChannel{
-		Name:         "webhook",
-		Type:         storage.NotifyWebhook,
-		ConfigCipher: mustEncrypt(t, cipher, `{"url":"`+webhookSrv.URL+`"}`),
-	}); err != nil {
-		t.Fatalf("create notify channel: %v", err)
-	}
-
-	var call atomic.Int32
-	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/auth/me":
-			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"balance":50}}`))
-		case "/api/v1/usage/dashboard/stats":
-			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"today_actual_cost":1,"total_actual_cost":2}}`))
-		case "/api/v1/groups/available":
-			n := call.Add(1)
-			if n == 1 {
-				_, _ = w.Write([]byte(`{"code":0,"message":"success","data":[
-					{"id":1,"name":"alpha","description":"a","rate_multiplier":1.0},
-					{"id":2,"name":"beta","description":"b","rate_multiplier":2.0}
-				]}`))
-				return
-			}
-			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":[
-				{"id":2,"name":"beta","description":"b","rate_multiplier":2.0},
-				{"id":3,"name":"gamma","description":"c","rate_multiplier":3.0}
-			]}`))
-		case "/api/v1/groups/rates":
-			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{}}`))
-		case "/api/v1/announcements":
-			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":[]}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer apiSrv.Close()
-
-	ch := &storage.Channel{
-		Name:                "sub",
-		Type:                storage.ChannelTypeSub2API,
-		SiteURL:             apiSrv.URL,
-		Username:            "u",
-		PasswordCipher:      mustEncrypt(t, cipher, `{"access_token":"token"}`),
-		CredentialMode:      storage.CredentialModeToken,
-		MonitorEnabled:      true,
-		SubscriptionEnabled: true,
-	}
-	if err := channels.Create(ch); err != nil {
-		t.Fatalf("create channel: %v", err)
-	}
-
-	channelSvc := channel.NewService(channels, authSessions, captchas, rates, monitorLogs, cipher)
-	dispatcher := notify.NewDispatcher(notifies, cipher, slog.New(slog.NewTextHandler(io.Discard, nil)), notify.Policy{
-		BatchRateChanges: true,
-		SendMaxAttempts:  1,
-	})
-	svc := NewService(channels, announcements, rates, monitorLogs, channelSvc, dispatcher, slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-	if err := svc.RefreshRates(context.Background(), ch); err != nil {
-		t.Fatalf("first refresh: %v", err)
-	}
-	logs, err := notifies.ListLogs(10)
-	if err != nil {
-		t.Fatalf("list logs: %v", err)
-	}
-	if len(logs) != 0 {
-		t.Fatalf("first refresh logs = %#v", logs)
-	}
-	snapshots, err := rates.ListByChannel(ch.ID)
-	if err != nil {
-		t.Fatalf("list snapshots: %v", err)
-	}
-	remoteGroupIDs := map[string]int64{}
-	for _, snapshot := range snapshots {
-		if snapshot.RemoteGroupID != nil {
-			remoteGroupIDs[snapshot.ModelName] = *snapshot.RemoteGroupID
-		}
-	}
-	if remoteGroupIDs["alpha"] != 1 || remoteGroupIDs["beta"] != 2 {
-		t.Fatalf("remote group ids = %#v", remoteGroupIDs)
-	}
-
-	if err := svc.RefreshRates(context.Background(), ch); err != nil {
-		t.Fatalf("second refresh: %v", err)
-	}
-	logs, err = notifies.ListLogs(20)
-	if err != nil {
-		t.Fatalf("list logs: %v", err)
-	}
-	var structureChanged int
-	for _, log := range logs {
-		if log.Event == storage.EventRateStructureChanged {
-			structureChanged++
-			if !strings.Contains(log.Subject, "[分组变动通知]") ||
-				!strings.Contains(log.Subject, "新增 1 / 删除 1") ||
-				!strings.Contains(log.Body, "gamma") ||
-				!strings.Contains(log.Body, "alpha") {
-				t.Fatalf("unexpected structure change log = %#v", log)
-			}
-		}
-	}
-	if structureChanged != 1 {
-		t.Fatalf("structureChanged=%d logs=%#v", structureChanged, logs)
-	}
-	if got := webhookHits.Load(); got != 1 {
-		t.Fatalf("webhook hits = %d, want 1", got)
-	}
-
-	list, err := rates.ListByChannel(ch.ID)
-	if err != nil {
-		t.Fatalf("list rates: %v", err)
-	}
-	if len(list) != 2 {
-		t.Fatalf("rate snapshots len = %d, want 2", len(list))
-	}
-	got := map[string]bool{}
-	for _, item := range list {
-		got[item.ModelName] = true
-	}
-	if !got["beta"] || !got["gamma"] || got["alpha"] {
-		t.Fatalf("rate snapshots = %#v", got)
-	}
-}
-
-func TestRefreshRatesAfterChannelReuseDoesNotEmitOldStructureChange(t *testing.T) {
-	db := openTestDB(t)
-	channels := storage.NewChannels(db)
-	authSessions := storage.NewAuthSessions(db)
-	captchas := storage.NewCaptchas(db)
-	announcements := storage.NewUpstreamAnnouncements(db)
-	rates := storage.NewRates(db)
-	monitorLogs := storage.NewMonitorLogs(db)
-	notifies := storage.NewNotifications(db)
-	cipher, err := crypto.NewCipher("secret")
-	if err != nil {
-		t.Fatalf("cipher: %v", err)
-	}
-
-	var webhookHits atomic.Int32
-	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		webhookHits.Add(1)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	defer webhookSrv.Close()
-
-	if err := notifies.CreateChannel(&storage.NotificationChannel{
-		Name:         "webhook",
-		Type:         storage.NotifyWebhook,
-		ConfigCipher: mustEncrypt(t, cipher, `{"url":"`+webhookSrv.URL+`"}`),
-	}); err != nil {
-		t.Fatalf("create notify channel: %v", err)
-	}
-
-	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/auth/me":
-			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"balance":50}}`))
-		case "/api/v1/groups/available":
-			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":[
-				{"id":1,"name":"new","description":"n","rate_multiplier":1.0}
-			]}`))
-		case "/api/v1/groups/rates":
-			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{}}`))
-		case "/api/v1/announcements":
-			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":[]}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer apiSrv.Close()
-
-	old := &storage.Channel{
-		ID:             1,
-		Name:           "old",
-		Type:           storage.ChannelTypeSub2API,
-		SiteURL:        apiSrv.URL,
-		Username:       "u",
-		PasswordCipher: mustEncrypt(t, cipher, `{"access_token":"token"}`),
-		CredentialMode: storage.CredentialModeToken,
-		MonitorEnabled: true,
-	}
-	if err := channels.Create(old); err != nil {
-		t.Fatalf("create old channel: %v", err)
-	}
-	if _, err := rates.Upsert(&storage.RateSnapshot{
-		ChannelID:  old.ID,
-		ModelName:  "old",
-		Ratio:      1,
-		LastSeenAt: time.Now(),
-	}); err != nil {
-		t.Fatalf("upsert old snapshot: %v", err)
-	}
-	if err := channels.Delete(old.ID); err != nil {
-		t.Fatalf("delete old channel: %v", err)
-	}
-
-	ch := &storage.Channel{
-		ID:             old.ID,
-		Name:           "new",
-		Type:           storage.ChannelTypeSub2API,
-		SiteURL:        apiSrv.URL,
-		Username:       "u",
-		PasswordCipher: mustEncrypt(t, cipher, `{"access_token":"token"}`),
-		CredentialMode: storage.CredentialModeToken,
-		MonitorEnabled: true,
-	}
-	if err := channels.Create(ch); err != nil {
-		t.Fatalf("create new channel: %v", err)
-	}
-
-	channelSvc := channel.NewService(channels, authSessions, captchas, rates, monitorLogs, cipher)
-	dispatcher := notify.NewDispatcher(notifies, cipher, slog.New(slog.NewTextHandler(io.Discard, nil)), notify.Policy{
-		BatchRateChanges: true,
-		SendMaxAttempts:  1,
-	})
-	svc := NewService(channels, announcements, rates, monitorLogs, channelSvc, dispatcher, slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-	if err := svc.RefreshRates(context.Background(), ch); err != nil {
-		t.Fatalf("refresh: %v", err)
-	}
-	logs, err := notifies.ListLogs(10)
-	if err != nil {
-		t.Fatalf("list logs: %v", err)
-	}
-	for _, log := range logs {
-		if log.Event == storage.EventRateStructureChanged {
-			t.Fatalf("unexpected structure change log: %#v", log)
-		}
-	}
-	if got := webhookHits.Load(); got != 0 {
-		t.Fatalf("webhook hits = %d, want 0", got)
-	}
-}
-
-func TestRateEventSubscriptionFiltersGroups(t *testing.T) {
-	db := openTestDB(t)
-	channels := storage.NewChannels(db)
-	authSessions := storage.NewAuthSessions(db)
-	captchas := storage.NewCaptchas(db)
-	announcements := storage.NewUpstreamAnnouncements(db)
-	rates := storage.NewRates(db)
-	monitorLogs := storage.NewMonitorLogs(db)
-	notifies := storage.NewNotifications(db)
-	cipher, err := crypto.NewCipher("secret")
-	if err != nil {
-		t.Fatalf("cipher: %v", err)
-	}
-
-	var webhookHits atomic.Int32
-	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		webhookHits.Add(1)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	defer webhookSrv.Close()
-
-	if err := notifies.CreateChannel(&storage.NotificationChannel{
-		Name:          "webhook",
-		Type:          storage.NotifyWebhook,
-		ConfigCipher:  mustEncrypt(t, cipher, `{"url":"`+webhookSrv.URL+`"}`),
-		Subscriptions: `[{"channel_id":1,"mode":"groups","groups":["beta"]}]`,
-	}); err != nil {
-		t.Fatalf("create notify channel: %v", err)
-	}
-
-	var call atomic.Int32
-	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/auth/me":
-			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"balance":50}}`))
-		case "/api/v1/usage/dashboard/stats":
-			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"today_actual_cost":1,"total_actual_cost":2}}`))
-		case "/api/v1/groups/available":
-			n := call.Add(1)
-			if n == 1 {
-				_, _ = w.Write([]byte(`{"code":0,"message":"success","data":[
-					{"id":1,"name":"alpha","description":"a","rate_multiplier":1.0}
-				]}`))
-				return
-			}
-			if n == 2 {
-				_, _ = w.Write([]byte(`{"code":0,"message":"success","data":[
-					{"id":1,"name":"alpha","description":"a","rate_multiplier":1.0},
-					{"id":2,"name":"beta","description":"b","rate_multiplier":2.0},
-					{"id":3,"name":"gamma","description":"c","rate_multiplier":3.0}
-				]}`))
-				return
-			}
-			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":[
-				{"id":1,"name":"alpha","description":"a","rate_multiplier":1.0},
-				{"id":3,"name":"gamma","description":"c","rate_multiplier":3.0}
-			]}`))
-		case "/api/v1/groups/rates":
-			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{}}`))
-		case "/api/v1/announcements":
-			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":[]}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer apiSrv.Close()
-
-	ch := &storage.Channel{
-		Name:                "sub",
-		Type:                storage.ChannelTypeSub2API,
-		SiteURL:             apiSrv.URL,
-		Username:            "u",
-		PasswordCipher:      mustEncrypt(t, cipher, `{"access_token":"token"}`),
-		CredentialMode:      storage.CredentialModeToken,
-		MonitorEnabled:      true,
-		SubscriptionEnabled: true,
-	}
-	if err := channels.Create(ch); err != nil {
-		t.Fatalf("create channel: %v", err)
-	}
-
-	channelSvc := channel.NewService(channels, authSessions, captchas, rates, monitorLogs, cipher)
-	dispatcher := notify.NewDispatcher(notifies, cipher, slog.New(slog.NewTextHandler(io.Discard, nil)), notify.Policy{
-		BatchRateChanges: true,
-		SendMaxAttempts:  1,
-	})
-	svc := NewService(channels, announcements, rates, monitorLogs, channelSvc, dispatcher, slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-	if err := svc.RefreshRates(context.Background(), ch); err != nil {
-		t.Fatalf("first refresh: %v", err)
-	}
-	if err := svc.RefreshRates(context.Background(), ch); err != nil {
-		t.Fatalf("second refresh: %v", err)
-	}
-	if err := svc.RefreshRates(context.Background(), ch); err != nil {
-		t.Fatalf("third refresh: %v", err)
-	}
-	logs, err := notifies.ListLogs(20)
-	if err != nil {
-		t.Fatalf("list logs: %v", err)
-	}
-	var foundAddedBeta, foundRemovedBeta bool
-	for _, log := range logs {
-		if log.Event != storage.EventRateStructureChanged {
-			continue
-		}
-		if strings.Contains(log.Subject, "新增 1 / 删除 0") &&
-			strings.Contains(log.Body, "beta") {
-			foundAddedBeta = true
-		}
-		if strings.Contains(log.Subject, "新增 0 / 删除 1") &&
-			strings.Contains(log.Body, "beta") {
-			foundRemovedBeta = true
-		}
-	}
-	if !foundAddedBeta || !foundRemovedBeta {
-		t.Fatalf("logs = %#v", logs)
-	}
-	if got := webhookHits.Load(); got != 2 {
-		t.Fatalf("webhook hits = %d, want 2", got)
-	}
-}
-
-func TestSubscriptionUsageAlertsAndCooldown(t *testing.T) {
-	db := openTestDB(t)
-	channels := storage.NewChannels(db)
-	authSessions := storage.NewAuthSessions(db)
-	captchas := storage.NewCaptchas(db)
-	announcements := storage.NewUpstreamAnnouncements(db)
-	rates := storage.NewRates(db)
-	monitorLogs := storage.NewMonitorLogs(db)
-	notifies := storage.NewNotifications(db)
-	cipher, err := crypto.NewCipher("secret")
-	if err != nil {
-		t.Fatalf("cipher: %v", err)
-	}
-
-	var webhookHits atomic.Int32
-	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		webhookHits.Add(1)
-		var body struct {
-			Event string `json:"event"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode webhook: %v", err)
-		}
-		if body.Event != string(storage.EventSubscriptionDailyLow) &&
-			body.Event != string(storage.EventSubscriptionMonthlyLow) &&
-			body.Event != string(storage.EventSubscriptionExpiring) {
-			t.Fatalf("unexpected event = %q", body.Event)
-		}
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	defer webhookSrv.Close()
-
-	if err := notifies.CreateChannel(&storage.NotificationChannel{
-		Name:         "webhook",
-		Type:         storage.NotifyWebhook,
-		ConfigCipher: mustEncrypt(t, cipher, `{"url":"`+webhookSrv.URL+`"}`),
-	}); err != nil {
-		t.Fatalf("create notify channel: %v", err)
-	}
-
-	expiresAt := time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
-	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/auth/me":
-			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"balance":50}}`))
-		case "/api/v1/usage/dashboard/stats":
-			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"today_actual_cost":1,"total_actual_cost":2}}`))
-		case "/api/v1/subscriptions/progress":
-			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":[{"subscription":{"id":9,"group_id":3,"status":"active","starts_at":"2026-01-01T00:00:00Z","expires_at":"` + expiresAt + `","group":{"id":3,"name":"pro"}},"progress":{"id":9,"group_name":"pro","expires_at":"` + expiresAt + `","expires_in_days":0,"daily":{"limit_usd":10,"used_usd":9,"remaining_usd":1,"percentage":90,"window_start":"2026-01-01T00:00:00Z","resets_at":"2026-01-02T00:00:00Z","resets_in_seconds":3600},"weekly":{"limit_usd":0,"used_usd":0,"remaining_usd":0,"percentage":0},"monthly":{"limit_usd":100,"used_usd":96,"remaining_usd":4,"percentage":96,"window_start":"2026-01-01T00:00:00Z","resets_at":"2026-02-01T00:00:00Z","resets_in_seconds":3600}}}]}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer apiSrv.Close()
-
-	ch := &storage.Channel{
-		Name:                "sub",
-		Type:                storage.ChannelTypeSub2API,
-		SiteURL:             apiSrv.URL,
-		Username:            "u",
-		PasswordCipher:      mustEncrypt(t, cipher, `{"access_token":"token"}`),
-		CredentialMode:      storage.CredentialModeToken,
-		MonitorEnabled:      true,
-		SubscriptionEnabled: true,
-	}
-	if err := channels.Create(ch); err != nil {
-		t.Fatalf("create channel: %v", err)
-	}
-
-	channelSvc := channel.NewService(channels, authSessions, captchas, rates, monitorLogs, cipher)
-	dispatcher := notify.NewDispatcher(notifies, cipher, slog.New(slog.NewTextHandler(io.Discard, nil)), notify.Policy{
-		SubscriptionDailyRemainingThresholdPct:   15,
-		SubscriptionWeeklyRemainingThresholdPct:  15,
-		SubscriptionMonthlyRemainingThresholdPct: 5,
-		SubscriptionExpiryThreshold:              3 * time.Hour,
-		SubscriptionAlertCooldown:                time.Hour,
-		SendMaxAttempts:                          1,
-	})
-	svc := NewService(channels, announcements, rates, monitorLogs, channelSvc, dispatcher, slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-	svc.ScanAllBalances(context.Background())
-	if got := webhookHits.Load(); got != 3 {
-		t.Fatalf("webhook hits = %d, want 3", got)
-	}
-	svc.ScanAllBalances(context.Background())
-	if got := webhookHits.Load(); got != 3 {
-		t.Fatalf("webhook hits after cooldown = %d, want 3", got)
-	}
-
-	logs, err := notifies.ListLogs(10)
-	if err != nil {
-		t.Fatalf("list logs: %v", err)
-	}
-	seen := map[storage.NotificationEvent]bool{}
-	for _, log := range logs {
-		seen[log.Event] = true
-	}
-	if !seen[storage.EventSubscriptionDailyLow] || seen[storage.EventSubscriptionWeeklyLow] || !seen[storage.EventSubscriptionMonthlyLow] || !seen[storage.EventSubscriptionExpiring] {
-		t.Fatalf("events = %#v", seen)
-	}
-}
-
-func mustEncrypt(t *testing.T, cipher *crypto.Cipher, plain string) string {
+func encrypt(t *testing.T, cipher *crypto.Cipher, value string) string {
 	t.Helper()
-	out, err := cipher.Encrypt(plain)
+	result, err := cipher.Encrypt(value)
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
-	return out
+	return result
 }
 
-func jsonNumber(v int) string {
-	b, _ := json.Marshal(v)
-	return string(b)
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }

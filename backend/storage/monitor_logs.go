@@ -23,14 +23,14 @@ func (r *MonitorLogs) Append(l *MonitorLog) error {
 	return r.db.Create(l).Error
 }
 
-// List 倒序拉取监控日志。channelID 为 0 表示不过滤。
-func (r *MonitorLogs) List(channelID uint, limit int) ([]MonitorLog, error) {
+// List returns monitor logs in reverse chronological order. accountID 0 skips filtering.
+func (r *MonitorLogs) List(accountID uint, limit int) ([]MonitorLog, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	q := r.db.Order("started_at DESC").Limit(limit)
-	if channelID != 0 {
-		q = q.Where("channel_id = ?", channelID)
+	if accountID != 0 {
+		q = q.Where("account_id = ?", accountID)
 	}
 	var list []MonitorLog
 	if err := q.Find(&list).Error; err != nil {

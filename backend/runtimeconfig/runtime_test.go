@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bejix/upstream-ops/backend/channel"
+	"github.com/bejix/upstream-ops/backend/account"
 	"github.com/bejix/upstream-ops/backend/config"
 	"github.com/bejix/upstream-ops/backend/connector"
 	"github.com/bejix/upstream-ops/backend/scheduler"
@@ -38,7 +38,7 @@ func TestApplyFromFileUpdatesUpstreamConfig(t *testing.T) {
 		t.Fatalf("save config: %v", err)
 	}
 
-	channelSvc := channel.NewService(nil, nil, nil, nil, nil, nil)
+	channelSvc := account.NewService(nil, nil, nil, nil, nil, nil)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mgr := New(
 		path,

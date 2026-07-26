@@ -47,15 +47,31 @@ func (r *UpstreamAnnouncements) ListPage(page, pageSize int) ([]UpstreamAnnounce
 	return list, total, nil
 }
 
-func (r *UpstreamAnnouncements) CountByChannel(channelID uint) (int64, error) {
+func (r *UpstreamAnnouncements) CountByAccount(accountID uint) (int64, error) {
 	var n int64
-	if err := r.db.Model(&UpstreamAnnouncement{}).Where("channel_id = ?", channelID).Count(&n).Error; err != nil {
+	if err := r.db.Model(&UpstreamAnnouncement{}).Where("account_id = ?", accountID).Count(&n).Error; err != nil {
 		return 0, err
 	}
 	return n, nil
 }
 
-func (r *UpstreamAnnouncements) Sync(channelID uint, list []UpstreamAnnouncement) ([]UpstreamAnnouncement, error) {
+func (r *UpstreamAnnouncements) CountBySite(siteID uint) (int64, error) {
+	var n int64
+	if err := r.db.Model(&UpstreamAnnouncement{}).Where("site_id = ?", siteID).Count(&n).Error; err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+func (r *UpstreamAnnouncements) Sync(accountID uint, list []UpstreamAnnouncement) ([]UpstreamAnnouncement, error) {
+	var account UpstreamAccount
+	if err := r.db.Select("id", "site_id").First(&account, accountID).Error; err != nil {
+		return nil, err
+	}
+	return r.SyncSite(account.SiteID, accountID, list)
+}
+
+func (r *UpstreamAnnouncements) SyncSite(siteID, sourceAccountID uint, list []UpstreamAnnouncement) ([]UpstreamAnnouncement, error) {
 	if len(list) == 0 {
 		return nil, nil
 	}
@@ -63,12 +79,13 @@ func (r *UpstreamAnnouncements) Sync(channelID uint, list []UpstreamAnnouncement
 	newItems := make([]UpstreamAnnouncement, 0, len(list))
 	for i := range list {
 		item := list[i]
-		item.ChannelID = channelID
+		item.SiteID = siteID
+		item.AccountID = sourceAccountID
 		if item.FirstSeenAt.IsZero() {
 			item.FirstSeenAt = now
 		}
 		res := r.db.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "channel_id"}, {Name: "source_key"}},
+			Columns:   []clause.Column{{Name: "site_id"}, {Name: "source_key"}},
 			DoNothing: true,
 		}).Create(&item)
 		if res.Error != nil {
@@ -81,8 +98,13 @@ func (r *UpstreamAnnouncements) Sync(channelID uint, list []UpstreamAnnouncement
 	return newItems, nil
 }
 
-func (r *UpstreamAnnouncements) DeleteByChannel(channelID uint) (int64, error) {
-	res := r.db.Where("channel_id = ?", channelID).Delete(&UpstreamAnnouncement{})
+func (r *UpstreamAnnouncements) DeleteBySite(siteID uint) (int64, error) {
+	res := r.db.Where("site_id = ?", siteID).Delete(&UpstreamAnnouncement{})
+	return res.RowsAffected, res.Error
+}
+
+func (r *UpstreamAnnouncements) DeleteByAccount(accountID uint) (int64, error) {
+	res := r.db.Where("account_id = ?", accountID).Delete(&UpstreamAnnouncement{})
 	return res.RowsAffected, res.Error
 }
 
@@ -91,10 +113,10 @@ func (r *UpstreamAnnouncements) DeleteBefore(cutoff time.Time) (int64, error) {
 	return res.RowsAffected, res.Error
 }
 
-func (r *UpstreamAnnouncements) Exists(channelID uint, sourceKey string) (bool, error) {
+func (r *UpstreamAnnouncements) Exists(accountID uint, sourceKey string) (bool, error) {
 	var n int64
 	if err := r.db.Model(&UpstreamAnnouncement{}).
-		Where("channel_id = ? AND source_key = ?", channelID, sourceKey).
+		Where("account_id = ? AND source_key = ?", accountID, sourceKey).
 		Count(&n).Error; err != nil {
 		return false, err
 	}

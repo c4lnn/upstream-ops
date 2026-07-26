@@ -57,8 +57,8 @@ type sub2Resp struct {
 	Data    json.RawMessage `json:"data"`
 }
 
-func (c *Client) GetTurnstileSiteKey(ctx context.Context, ch *connector.Channel) (string, error) {
-	body, err := c.getJSON(ctx, strings.TrimRight(ch.SiteURL, "/")+"/api/v1/settings/public", nil)
+func (c *Client) GetTurnstileSiteKey(ctx context.Context, ch *connector.AccountTarget) (string, error) {
+	body, err := c.getJSON(ctx, strings.TrimRight(ch.BaseURL, "/")+"/api/v1/settings/public", nil)
 	if err != nil {
 		return "", fmt.Errorf("sub2api public settings: %w", err)
 	}
@@ -75,8 +75,8 @@ func (c *Client) GetTurnstileSiteKey(ctx context.Context, ch *connector.Channel)
 	return settings.TurnstileSiteKey, nil
 }
 
-func (c *Client) Login(ctx context.Context, ch *connector.Channel) (*connector.AuthSession, error) {
-	site := strings.TrimRight(ch.SiteURL, "/")
+func (c *Client) Login(ctx context.Context, ch *connector.AccountTarget) (*connector.AuthSession, error) {
+	site := strings.TrimRight(ch.BaseURL, "/")
 	body := map[string]any{
 		"email":    ch.Username,
 		"password": ch.Password,
@@ -134,11 +134,11 @@ func (c *Client) Login(ctx context.Context, ch *connector.Channel) (*connector.A
 	}, nil
 }
 
-func (c *Client) RefreshSession(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) (*connector.AuthSession, error) {
+func (c *Client) RefreshSession(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) (*connector.AuthSession, error) {
 	if session == nil || strings.TrimSpace(session.RefreshToken) == "" {
 		return nil, errors.New("missing sub2api refresh_token")
 	}
-	site := strings.TrimRight(ch.SiteURL, "/")
+	site := strings.TrimRight(ch.BaseURL, "/")
 	resp, err := c.http.R().
 		SetContext(ctx).
 		SetHeader("Content-Type", "application/json").
@@ -183,16 +183,16 @@ func (c *Client) RefreshSession(ctx context.Context, ch *connector.Channel, sess
 	}, nil
 }
 
-func (c *Client) CheckAuth(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) error {
+func (c *Client) CheckAuth(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) error {
 	if session == nil || session.AccessToken == "" {
 		return errors.New("missing sub2api access_token")
 	}
-	_, err := c.getJSON(ctx, strings.TrimRight(ch.SiteURL, "/")+"/api/v1/auth/me", session)
+	_, err := c.getJSON(ctx, strings.TrimRight(ch.BaseURL, "/")+"/api/v1/auth/me", session)
 	return err
 }
 
-func (c *Client) GetBalance(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) (*connector.BalanceResult, error) {
-	body, err := c.getJSON(ctx, strings.TrimRight(ch.SiteURL, "/")+"/api/v1/auth/me", session)
+func (c *Client) GetBalance(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) (*connector.BalanceResult, error) {
+	body, err := c.getJSON(ctx, strings.TrimRight(ch.BaseURL, "/")+"/api/v1/auth/me", session)
 	if err != nil {
 		return nil, fmt.Errorf("sub2api me: %w", err)
 	}
@@ -209,8 +209,8 @@ func (c *Client) GetBalance(ctx context.Context, ch *connector.Channel, session 
 	}, nil
 }
 
-func (c *Client) GetCosts(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) (*connector.CostResult, error) {
-	body, err := c.getJSON(ctx, strings.TrimRight(ch.SiteURL, "/")+"/api/v1/usage/dashboard/stats", session)
+func (c *Client) GetCosts(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) (*connector.CostResult, error) {
+	body, err := c.getJSON(ctx, strings.TrimRight(ch.BaseURL, "/")+"/api/v1/usage/dashboard/stats", session)
 	if err != nil {
 		return nil, fmt.Errorf("sub2api dashboard stats: %w", err)
 	}
@@ -228,11 +228,11 @@ func (c *Client) GetCosts(ctx context.Context, ch *connector.Channel, session *c
 	}, nil
 }
 
-func (c *Client) rechargeMultiplier(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) *float64 {
+func (c *Client) rechargeMultiplier(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) *float64 {
 	if ch.RechargeMultiplier != nil && *ch.RechargeMultiplier > 0 {
 		return ch.RechargeMultiplier
 	}
-	body, err := c.getJSON(ctx, strings.TrimRight(ch.SiteURL, "/")+"/api/v1/payment/checkout-info", session)
+	body, err := c.getJSON(ctx, strings.TrimRight(ch.BaseURL, "/")+"/api/v1/payment/checkout-info", session)
 	if err != nil {
 		return nil
 	}
@@ -245,8 +245,8 @@ func (c *Client) rechargeMultiplier(ctx context.Context, ch *connector.Channel, 
 	return &raw.BalanceRechargeMultiplier
 }
 
-func (c *Client) GetRates(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) ([]connector.RateResult, error) {
-	site := strings.TrimRight(ch.SiteURL, "/")
+func (c *Client) GetRates(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) ([]connector.RateResult, error) {
+	site := strings.TrimRight(ch.BaseURL, "/")
 
 	availBody, err := c.getJSON(ctx, site+"/api/v1/groups/available", session)
 	if err != nil {
@@ -288,8 +288,8 @@ func ptrInt64(v uint64) *int64 {
 	return &id
 }
 
-func (c *Client) GetAnnouncements(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) ([]connector.AnnouncementResult, error) {
-	body, err := c.getJSON(ctx, strings.TrimRight(ch.SiteURL, "/")+"/api/v1/announcements", session)
+func (c *Client) GetAnnouncements(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) ([]connector.AnnouncementResult, error) {
+	body, err := c.getJSON(ctx, strings.TrimRight(ch.BaseURL, "/")+"/api/v1/announcements", session)
 	if err != nil {
 		return nil, fmt.Errorf("sub2api announcements: %w", err)
 	}
@@ -329,8 +329,8 @@ func (c *Client) GetAnnouncements(ctx context.Context, ch *connector.Channel, se
 	return out, nil
 }
 
-func (c *Client) RedeemCode(ctx context.Context, ch *connector.Channel, session *connector.AuthSession, code string) (*connector.RedeemResult, error) {
-	site := strings.TrimRight(ch.SiteURL, "/")
+func (c *Client) RedeemCode(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession, code string) (*connector.RedeemResult, error) {
+	site := strings.TrimRight(ch.BaseURL, "/")
 	resp, err := c.http.R().
 		SetContext(ctx).
 		SetHeader("Content-Type", "application/json").
@@ -403,8 +403,8 @@ func (c *Client) RedeemCode(ctx context.Context, ch *connector.Channel, session 
 	return res, nil
 }
 
-func (c *Client) GetRechargeInfo(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) (*connector.RechargeInfo, error) {
-	body, err := c.getJSON(ctx, strings.TrimRight(ch.SiteURL, "/")+"/api/v1/payment/checkout-info", session)
+func (c *Client) GetRechargeInfo(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) (*connector.RechargeInfo, error) {
+	body, err := c.getJSON(ctx, strings.TrimRight(ch.BaseURL, "/")+"/api/v1/payment/checkout-info", session)
 	if err != nil {
 		return nil, fmt.Errorf("sub2api checkout info: %w", err)
 	}
@@ -450,8 +450,8 @@ func (c *Client) GetRechargeInfo(ctx context.Context, ch *connector.Channel, ses
 	}, nil
 }
 
-func (c *Client) GetSubscriptionInfo(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) (*connector.SubscriptionInfo, error) {
-	body, err := c.getJSON(ctx, strings.TrimRight(ch.SiteURL, "/")+"/api/v1/payment/checkout-info", session)
+func (c *Client) GetSubscriptionInfo(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) (*connector.SubscriptionInfo, error) {
+	body, err := c.getJSON(ctx, strings.TrimRight(ch.BaseURL, "/")+"/api/v1/payment/checkout-info", session)
 	if err != nil {
 		return nil, fmt.Errorf("sub2api checkout info: %w", err)
 	}
@@ -508,7 +508,7 @@ func (c *Client) GetSubscriptionInfo(ctx context.Context, ch *connector.Channel,
 	return &connector.SubscriptionInfo{Plans: plans, Methods: methods}, nil
 }
 
-func (c *Client) CreateRecharge(ctx context.Context, ch *connector.Channel, session *connector.AuthSession, req connector.RechargeRequest) (*connector.RechargeLaunch, error) {
+func (c *Client) CreateRecharge(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession, req connector.RechargeRequest) (*connector.RechargeLaunch, error) {
 	if req.PaymentMethod != "alipay" && req.PaymentMethod != "wxpay" {
 		return nil, errors.New("sub2api 仅支持 alipay 或 wxpay")
 	}
@@ -526,7 +526,7 @@ func (c *Client) CreateRecharge(ctx context.Context, ch *connector.Channel, sess
 			"is_mobile":      req.IsMobile,
 			"payment_source": "hosted_redirect",
 		}).
-		Post(strings.TrimRight(ch.SiteURL, "/") + "/api/v1/payment/orders")
+		Post(strings.TrimRight(ch.BaseURL, "/") + "/api/v1/payment/orders")
 	if err != nil {
 		return nil, fmt.Errorf("sub2api create recharge http: %w", err)
 	}
@@ -540,7 +540,7 @@ func (c *Client) CreateRecharge(ctx context.Context, ch *connector.Channel, sess
 	return raw.toLaunch(req.IsMobile)
 }
 
-func (c *Client) CreateSubscription(ctx context.Context, ch *connector.Channel, session *connector.AuthSession, req connector.SubscriptionRequest) (*connector.SubscriptionLaunch, error) {
+func (c *Client) CreateSubscription(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession, req connector.SubscriptionRequest) (*connector.SubscriptionLaunch, error) {
 	planID, err := strconv.ParseInt(strings.TrimSpace(req.PlanID), 10, 64)
 	if err != nil || planID <= 0 {
 		return nil, errors.New("sub2api 订阅套餐 ID 无效")
@@ -560,7 +560,7 @@ func (c *Client) CreateSubscription(ctx context.Context, ch *connector.Channel, 
 			"is_mobile":      req.IsMobile,
 			"payment_source": "hosted_redirect",
 		}).
-		Post(strings.TrimRight(ch.SiteURL, "/") + "/api/v1/payment/orders")
+		Post(strings.TrimRight(ch.BaseURL, "/") + "/api/v1/payment/orders")
 	if err != nil {
 		return nil, fmt.Errorf("sub2api create subscription http: %w", err)
 	}
@@ -574,8 +574,8 @@ func (c *Client) CreateSubscription(ctx context.Context, ch *connector.Channel, 
 	return raw.toLaunch(req.IsMobile)
 }
 
-func (c *Client) GetSubscriptionUsage(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) (*connector.SubscriptionUsageInfo, error) {
-	body, err := c.getJSON(ctx, strings.TrimRight(ch.SiteURL, "/")+"/api/v1/subscriptions/progress", session)
+func (c *Client) GetSubscriptionUsage(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) (*connector.SubscriptionUsageInfo, error) {
+	body, err := c.getJSON(ctx, strings.TrimRight(ch.BaseURL, "/")+"/api/v1/subscriptions/progress", session)
 	if err != nil {
 		return nil, fmt.Errorf("sub2api subscription progress: %w", err)
 	}
@@ -594,7 +594,7 @@ func (c *Client) GetSubscriptionUsage(ctx context.Context, ch *connector.Channel
 	return &connector.SubscriptionUsageInfo{Items: items}, nil
 }
 
-func (c *Client) ListAPIKeys(ctx context.Context, ch *connector.Channel, session *connector.AuthSession, query connector.APIKeyQuery) (*connector.APIKeyPage, error) {
+func (c *Client) ListAPIKeys(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession, query connector.APIKeyQuery) (*connector.APIKeyPage, error) {
 	page, pageSize := normalizeAPIKeyPage(query.Page, query.PageSize)
 	params := url.Values{}
 	params.Set("page", strconv.Itoa(page))
@@ -610,7 +610,7 @@ func (c *Client) ListAPIKeys(ctx context.Context, ch *connector.Channel, session
 	if groupID := strings.TrimSpace(query.GroupID); groupID != "" {
 		params.Set("group_id", groupID)
 	}
-	body, err := c.getJSON(ctx, strings.TrimRight(ch.SiteURL, "/")+"/api/v1/keys?"+params.Encode(), session)
+	body, err := c.getJSON(ctx, strings.TrimRight(ch.BaseURL, "/")+"/api/v1/keys?"+params.Encode(), session)
 	if err != nil {
 		return nil, fmt.Errorf("sub2api api keys: %w", err)
 	}
@@ -655,7 +655,7 @@ func (c *Client) ListAPIKeys(ctx context.Context, ch *connector.Channel, session
 	}, nil
 }
 
-func (c *Client) ListAPIKeyGroups(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) ([]connector.APIKeyGroup, error) {
+func (c *Client) ListAPIKeyGroups(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) ([]connector.APIKeyGroup, error) {
 	groups, err := c.sub2APIGroupMap(ctx, ch, session)
 	if err != nil {
 		return nil, err
@@ -667,7 +667,7 @@ func (c *Client) ListAPIKeyGroups(ctx context.Context, ch *connector.Channel, se
 	return out, nil
 }
 
-func (c *Client) CreateAPIKey(ctx context.Context, ch *connector.Channel, session *connector.AuthSession, req connector.APIKeyCreateRequest) (*connector.APIKey, error) {
+func (c *Client) CreateAPIKey(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession, req connector.APIKeyCreateRequest) (*connector.APIKey, error) {
 	if strings.TrimSpace(req.Name) == "" {
 		return nil, errors.New("密钥名称不能为空")
 	}
@@ -676,7 +676,7 @@ func (c *Client) CreateAPIKey(ctx context.Context, ch *connector.Channel, sessio
 		SetHeader("Content-Type", "application/json").
 		SetHeader("Authorization", "Bearer "+session.AccessToken).
 		SetBody(buildSub2CreateAPIKey(req)).
-		Post(strings.TrimRight(ch.SiteURL, "/") + "/api/v1/keys")
+		Post(strings.TrimRight(ch.BaseURL, "/") + "/api/v1/keys")
 	if err != nil {
 		return nil, fmt.Errorf("sub2api create api key http: %w", err)
 	}
@@ -695,7 +695,7 @@ func (c *Client) CreateAPIKey(ctx context.Context, ch *connector.Channel, sessio
 	return &out, nil
 }
 
-func (c *Client) UpdateAPIKey(ctx context.Context, ch *connector.Channel, session *connector.AuthSession, id int64, req connector.APIKeyUpdateRequest) (*connector.APIKey, error) {
+func (c *Client) UpdateAPIKey(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession, id int64, req connector.APIKeyUpdateRequest) (*connector.APIKey, error) {
 	if id <= 0 {
 		return nil, errors.New("密钥 ID 无效")
 	}
@@ -708,7 +708,7 @@ func (c *Client) UpdateAPIKey(ctx context.Context, ch *connector.Channel, sessio
 		SetHeader("Content-Type", "application/json").
 		SetHeader("Authorization", "Bearer "+session.AccessToken).
 		SetBody(body).
-		Put(strings.TrimRight(ch.SiteURL, "/") + "/api/v1/keys/" + strconv.FormatInt(id, 10))
+		Put(strings.TrimRight(ch.BaseURL, "/") + "/api/v1/keys/" + strconv.FormatInt(id, 10))
 	if err != nil {
 		return nil, fmt.Errorf("sub2api update api key http: %w", err)
 	}
@@ -727,14 +727,14 @@ func (c *Client) UpdateAPIKey(ctx context.Context, ch *connector.Channel, sessio
 	return &out, nil
 }
 
-func (c *Client) DeleteAPIKey(ctx context.Context, ch *connector.Channel, session *connector.AuthSession, id int64) error {
+func (c *Client) DeleteAPIKey(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession, id int64) error {
 	if id <= 0 {
 		return errors.New("密钥 ID 无效")
 	}
 	resp, err := c.http.R().
 		SetContext(ctx).
 		SetHeader("Authorization", "Bearer "+session.AccessToken).
-		Delete(strings.TrimRight(ch.SiteURL, "/") + "/api/v1/keys/" + strconv.FormatInt(id, 10))
+		Delete(strings.TrimRight(ch.BaseURL, "/") + "/api/v1/keys/" + strconv.FormatInt(id, 10))
 	if err != nil {
 		return fmt.Errorf("sub2api delete api key http: %w", err)
 	}
@@ -744,11 +744,11 @@ func (c *Client) DeleteAPIKey(ctx context.Context, ch *connector.Channel, sessio
 	return decodeSub2Write(resp.Body(), "sub2api delete api key")
 }
 
-func (c *Client) RevealAPIKey(ctx context.Context, ch *connector.Channel, session *connector.AuthSession, id int64) (string, error) {
+func (c *Client) RevealAPIKey(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession, id int64) (string, error) {
 	if id <= 0 {
 		return "", errors.New("密钥 ID 无效")
 	}
-	body, err := c.getJSON(ctx, strings.TrimRight(ch.SiteURL, "/")+"/api/v1/keys/"+strconv.FormatInt(id, 10), session)
+	body, err := c.getJSON(ctx, strings.TrimRight(ch.BaseURL, "/")+"/api/v1/keys/"+strconv.FormatInt(id, 10), session)
 	if err != nil {
 		return "", fmt.Errorf("sub2api reveal api key: %w", err)
 	}
@@ -1386,8 +1386,8 @@ func hashAnnouncementKey(parts ...string) string {
 	return "hash:" + hex.EncodeToString(h.Sum(nil))
 }
 
-func (c *Client) sub2APIGroupMap(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) (map[int64]connector.APIKeyGroup, error) {
-	site := strings.TrimRight(ch.SiteURL, "/")
+func (c *Client) sub2APIGroupMap(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) (map[int64]connector.APIKeyGroup, error) {
+	site := strings.TrimRight(ch.BaseURL, "/")
 	body, err := c.getJSON(ctx, site+"/api/v1/groups/available", session)
 	if err != nil {
 		return nil, fmt.Errorf("sub2api api key groups: %w", err)

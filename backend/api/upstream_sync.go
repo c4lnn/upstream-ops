@@ -144,16 +144,17 @@ func listUpstreamSyncTargetProxies(c *gin.Context, d *Deps) {
 }
 
 func listUpstreamSyncSourceModels(c *gin.Context, d *Deps) {
-	channelID, err := strconv.ParseUint(c.Query("channel_id"), 10, 64)
-	if err != nil || channelID == 0 {
+	rawAccountID := c.Query("account_id")
+	accountID, err := strconv.ParseUint(rawAccountID, 10, 64)
+	if err != nil || accountID == 0 {
 		if err == nil {
-			err = errors.New("channel_id is required")
+			err = errors.New("account_id is required")
 		}
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
 	in := syncer.SourceModelsInput{
-		ChannelID:       uint(channelID),
+		AccountID:       uint(accountID),
 		SourceGroupName: c.Query("source_group_name"),
 		Platform:        c.Query("platform"),
 	}

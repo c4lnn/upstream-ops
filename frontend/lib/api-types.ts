@@ -3,7 +3,7 @@
  * Keep in sync with backend/storage/*.go and backend/api/*.go.
  */
 
-export type ChannelType = "newapi" | "sub2api"
+export type UpstreamSiteType = "newapi" | "sub2api"
 
 export type CredentialMode = "password" | "token"
 
@@ -42,18 +42,16 @@ export type NotificationEvent =
   | "subscription_expiring"
   | "upstream_sync_group_changed"
 
-export interface Channel {
+export interface UpstreamAccount {
   id: number
-  name: string
-  type: ChannelType
-  site_url: string
+  site_id: number
+  alias: string
   username: string
   sort_order: number
   user_id?: string
   credential_mode: CredentialMode
   login_extra_params: string
   turnstile_enabled: boolean
-  ignore_announcements: boolean
   subscription_enabled: boolean
   proxy_enabled: boolean
   captcha_config_id?: number | null
@@ -70,8 +68,88 @@ export interface Channel {
   updated_at: string
 }
 
-export interface ChannelPage {
-  items: Channel[]
+export interface UpstreamSite {
+  id: number
+  name: string
+  type: UpstreamSiteType
+  base_url: string
+  sort_order: number
+  default_account_id: number
+  ignore_announcements: boolean
+  accounts: UpstreamAccount[]
+  account_count: number
+  uncollected_count: number
+  error_account_count: number
+  total_balance?: number | null
+  today_cost?: number | null
+  lowest_balance?: number | null
+  lowest_account_id?: number
+  lowest_account_alias?: string
+  last_sync_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type SiteAccountBundleImportStrategy = "create_only" | "upsert"
+export type SiteAccountBundlePlanAction = "create" | "update" | "skip" | "conflict"
+
+export interface SiteAccountBundleFieldChange {
+  field: string
+  before?: unknown
+  after?: unknown
+}
+
+export interface SiteAccountBundlePlanItem {
+  scope: "site" | "account"
+  key: string
+  parent_key?: string
+  name: string
+  action: SiteAccountBundlePlanAction
+  blocking: boolean
+  needs_credential: boolean
+  changes?: SiteAccountBundleFieldChange[]
+  warnings?: string[]
+  message?: string
+}
+
+export interface SiteAccountBundlePlanSummary {
+  create: number
+  update: number
+  skip: number
+  conflict: number
+  warnings: number
+  need_credential: number
+}
+
+export interface SiteAccountBundleBaseURLChange {
+  site_key: string
+  site_name: string
+  before: string
+  after: string
+  affected_account_count: number
+}
+
+export interface SiteAccountBundleImportPlan {
+  bundle_digest: string
+  digest: string
+  strategy: SiteAccountBundleImportStrategy
+  summary: SiteAccountBundlePlanSummary
+  has_conflicts: boolean
+  requires_base_url_confirmation: boolean
+  base_url_changes: SiteAccountBundleBaseURLChange[]
+  items: SiteAccountBundlePlanItem[]
+  warnings?: string[]
+}
+
+export interface SiteAccountBundleImportResult {
+  digest: string
+  summary: SiteAccountBundlePlanSummary
+  items: SiteAccountBundlePlanItem[]
+  warnings?: string[]
+}
+
+export interface UpstreamAccountPage {
+  items: UpstreamAccount[]
   total: number
   page: number
   page_size: number
@@ -96,7 +174,7 @@ export interface CaptchaConfig {
 
 export interface RateSnapshot {
   id: number
-  channel_id: number
+  account_id: number
   remote_group_id?: number | null
   model_name: string
   description?: string
@@ -106,19 +184,29 @@ export interface RateSnapshot {
   last_seen_at: string
 }
 
-export interface RateChangeLog {
+export interface RateChangeGroupAccount {
+  account_id: number
+  account_alias?: string
+}
+
+export interface RateChangeGroup {
   id: number
-  channel_id: number
+  site_id: number
+  site_name?: string
+  scan_run_id?: string
+  stable_group_key?: string
+  change_type?: string
   model_name: string
-  old_ratio: number | null
+  old_ratio?: number | null
   new_ratio: number
   old_completion_ratio?: number | null
   new_completion_ratio?: number
   changed_at: string
+  accounts: RateChangeGroupAccount[]
 }
 
-export interface RateChangeLogPage {
-  items: RateChangeLog[]
+export interface RateChangeGroupPage {
+  items: RateChangeGroup[]
   total: number
   page: number
   page_size: number
@@ -127,13 +215,14 @@ export interface RateChangeLogPage {
 
 export interface BalanceSnapshot {
   id: number
-  channel_id: number
+  account_id: number
   balance: number
   sampled_at: string
 }
 
 export interface NotificationSubscription {
-  channel_ids: number[]
+  site_ids: number[]
+  account_ids: number[]
   mode: "all" | "groups"
   groups?: string[]
   events?: NotificationEvent[]
@@ -153,7 +242,8 @@ export interface NotificationChannel {
 export interface NotificationLog {
   id: number
   channel_id: number
-  upstream_channel_id?: number
+  account_id?: number
+  site_id?: number
   channel_name?: string
   channel_type?: string
   event: NotificationEvent
@@ -166,7 +256,7 @@ export interface NotificationLog {
 
 export interface UpstreamAnnouncement {
   id: number
-  channel_id: number
+  site_id: number
   source_key: string
   title?: string
   content: string
@@ -179,7 +269,7 @@ export interface UpstreamAnnouncement {
 
 export interface MonitorLog {
   id: number
-  channel_id: number
+  account_id: number
   job: MonitorJob
   success: boolean
   error_message?: string
@@ -189,32 +279,23 @@ export interface MonitorLog {
 }
 
 export interface DashboardLowest {
-  channel_id: number
-  name: string
+  site_id: number
+  site_name: string
+  account_id: number
+  account_alias: string
   balance: number | null
 }
 
-export interface DashboardChannelStat {
-  id: number
-  name: string
-  type: string
-  monitor_enabled: boolean
-  last_balance?: number | null
-  today_cost?: number | null
-  total_cost?: number | null
-  last_error?: string
-}
-
 export interface DashboardSummary {
-  total_channels: number
-  active_channels: number
-  failed_channels: number
+  total_sites: number
+  total_accounts: number
+  active_accounts: number
+  failed_accounts: number
   total_balance: number
   today_total_cost: number
   total_cost: number
   lowest_balance: DashboardLowest | null
-  channels: DashboardChannelStat[]
-  recent_rate_changes: RateChangeLog[]
+  recent_rate_changes: RateChangeGroup[]
 }
 
 export interface BalanceTrendPoint {
@@ -251,6 +332,8 @@ export interface SystemSchedulerRetentionConfig {
 export interface SystemSchedulerConfig {
   balanceCron: string
   rateCron: string
+  balanceTimeoutSeconds: number
+  rateTimeoutSeconds: number
   concurrency: number
   retention: SystemSchedulerRetentionConfig
 }
@@ -312,7 +395,7 @@ export interface ApplyConfigResult {
   message: string
 }
 
-export interface ChannelRedeemResult {
+export interface AccountRedeemResult {
   message: string
   type: string
   value: number
@@ -332,14 +415,14 @@ export type SubscriptionPaymentMethod =
   | "waffo_pancake"
   | string
 
-export interface ChannelRechargeMethod {
+export interface AccountRechargeMethod {
   type: RechargePaymentMethod
   name: string
   min_amount: number
   max_amount: number
 }
 
-export interface ChannelRechargeInfo {
+export interface AccountRechargeInfo {
   amount_label: string
   amount_step: number
   min_amount: number
@@ -348,10 +431,10 @@ export interface ChannelRechargeInfo {
   help_text?: string
   help_image_url?: string
   alipay_force_qrcode: boolean
-  methods: ChannelRechargeMethod[]
+  methods: AccountRechargeMethod[]
 }
 
-export interface ChannelRechargeLaunch {
+export interface AccountRechargeLaunch {
   mode: "qrcode" | "redirect" | "form" | "success"
   qr_code?: string
   pay_url?: string
@@ -360,12 +443,12 @@ export interface ChannelRechargeLaunch {
   expires_at?: string
 }
 
-export interface ChannelSubscriptionMethod {
+export interface AccountSubscriptionMethod {
   type: SubscriptionPaymentMethod
   name: string
 }
 
-export interface ChannelSubscriptionPlan {
+export interface AccountSubscriptionPlan {
   id: string
   name: string
   description?: string
@@ -381,14 +464,14 @@ export interface ChannelSubscriptionPlan {
   payment_methods?: string[]
 }
 
-export interface ChannelSubscriptionInfo {
-  plans: ChannelSubscriptionPlan[]
-  methods: ChannelSubscriptionMethod[]
+export interface AccountSubscriptionInfo {
+  plans: AccountSubscriptionPlan[]
+  methods: AccountSubscriptionMethod[]
 }
 
-export type ChannelSubscriptionLaunch = ChannelRechargeLaunch
+export type AccountSubscriptionLaunch = AccountRechargeLaunch
 
-export interface ChannelSubscriptionUsageWindow {
+export interface AccountSubscriptionUsageWindow {
   limit_usd: number
   used_usd: number
   remaining_usd: number
@@ -399,7 +482,7 @@ export interface ChannelSubscriptionUsageWindow {
   resets_in_seconds: number
 }
 
-export interface ChannelSubscriptionUsage {
+export interface AccountSubscriptionUsage {
   id: number
   group_id: number
   group_name: string
@@ -407,22 +490,22 @@ export interface ChannelSubscriptionUsage {
   starts_at?: string | null
   expires_at?: string | null
   expires_in_days: number
-  daily?: ChannelSubscriptionUsageWindow | null
-  weekly?: ChannelSubscriptionUsageWindow | null
-  monthly?: ChannelSubscriptionUsageWindow | null
+  daily?: AccountSubscriptionUsageWindow | null
+  weekly?: AccountSubscriptionUsageWindow | null
+  monthly?: AccountSubscriptionUsageWindow | null
 }
 
-export interface ChannelSubscriptionUsageInfo {
-  items: ChannelSubscriptionUsage[]
+export interface AccountSubscriptionUsageInfo {
+  items: AccountSubscriptionUsage[]
 }
 
-export type ChannelAPIKeyStatus = "active" | "disabled" | "expired" | "quota_exhausted" | "unknown"
+export type AccountAPIKeyStatus = "active" | "disabled" | "expired" | "quota_exhausted" | "unknown"
 
-export interface ChannelAPIKey {
+export interface AccountAPIKey {
   id: number
   key: string
   name: string
-  status: ChannelAPIKeyStatus | string
+  status: AccountAPIKeyStatus | string
   group?: string
   group_name?: string
   group_description?: string
@@ -450,8 +533,8 @@ export interface ChannelAPIKey {
   usage_7d: number
 }
 
-export interface ChannelAPIKeyPage {
-  items: ChannelAPIKey[]
+export interface AccountAPIKeyPage {
+  items: AccountAPIKey[]
   total: number
   page: number
   page_size: number
@@ -474,14 +557,14 @@ export interface UpstreamAnnouncementPage {
   pages: number
 }
 
-export interface ChannelAPIKeyGroup {
+export interface AccountAPIKeyGroup {
   id?: number | null
   name: string
   description?: string
   ratio: number
 }
 
-export interface ChannelAPIKeyReveal {
+export interface AccountAPIKeyReveal {
   key: string
 }
 
@@ -521,7 +604,8 @@ export type UpstreamSyncRateConvertMode = "raw" | "multiply_100" | "divide_100" 
 
 export interface UpstreamSyncAccount {
   id?: number
-  source_channel_id: number
+  source_site_id: number
+  source_account_id: number
   source_group_id?: number | null
   source_group_name?: string
   proxy_id?: number | null

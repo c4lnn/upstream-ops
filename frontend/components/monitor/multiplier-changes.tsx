@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useState } from "react"
 import { ArrowDownRight, ArrowUpRight } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -12,31 +12,25 @@ import {
 } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { apiFetch } from "@/lib/api"
-import type { RateChangeLog, RateChangeLogPage } from "@/lib/api-types"
-import { channelTypeLabel, formatRatio, ratioDelta, relativeTime, shortTime } from "@/lib/format"
-import { useChannels, useDashboardSummary } from "@/lib/queries"
+import type { RateChangeGroup, RateChangeGroupAccount, RateChangeGroupPage } from "@/lib/api-types"
+import { formatRatio, ratioDelta, relativeTime, shortTime } from "@/lib/format"
+import { useDashboardSummary } from "@/lib/queries"
 import { cn } from "@/lib/utils"
 
 const DIALOG_SIZE = 20
+const ACCOUNT_BADGE_LIMIT = 3
 
 export function MultiplierChanges() {
   const summary = useDashboardSummary()
-  const channels = useChannels()
   const [detailOpen, setDetailOpen] = useState(false)
   const [page, setPage] = useState(1)
-  const [feed, setFeed] = useState<RateChangeLog[]>([])
+  const [feed, setFeed] = useState<RateChangeGroup[]>([])
   const [feedMeta, setFeedMeta] = useState<{ total: number; pages: number }>({
     total: 0,
     pages: 1,
   })
   const [feedLoading, setFeedLoading] = useState(false)
   const [feedError, setFeedError] = useState<string | null>(null)
-
-  const channelMap = useMemo(() => {
-    const m = new Map<number, { name: string; type: string }>()
-    for (const c of channels.data ?? []) m.set(c.id, { name: c.name, type: c.type })
-    return m
-  }, [channels.data])
 
   const items = summary.data?.recent_rate_changes ?? []
 
@@ -50,7 +44,7 @@ export function MultiplierChanges() {
     let cancelled = false
     setFeedLoading(true)
     setFeedError(null)
-    apiFetch<RateChangeLogPage>(`/rate-changes?page=${page}&page_size=${DIALOG_SIZE}`)
+    apiFetch<RateChangeGroupPage>(`/rate-changes?page=${page}&page_size=${DIALOG_SIZE}`)
       .then((res) => {
         if (cancelled) return
         const next = Array.isArray(res?.items) ? res.items : []
@@ -102,7 +96,7 @@ export function MultiplierChanges() {
             <ScrollArea type="hover" className="max-h-80 lg:h-full lg:max-h-none">
               <ul className="divide-y divide-border">
                 {items.map((item) => (
-                  <MultiplierChangeRow key={item.id} item={item} channelMap={channelMap} />
+                  <MultiplierChangeRow key={item.id} item={item} />
                 ))}
               </ul>
             </ScrollArea>
@@ -126,7 +120,7 @@ export function MultiplierChanges() {
           >
             <ul className="divide-y divide-border">
               {feed.map((item) => (
-                <MultiplierChangeRow key={item.id} item={item} channelMap={channelMap} compact />
+                <MultiplierChangeRow key={item.id} item={item} compact />
               ))}
               {feedLoading && feed.length === 0 ? (
                 <li className="px-4 py-6 text-sm text-muted-foreground">{"加载中…"}</li>
@@ -159,19 +153,23 @@ export function MultiplierChanges() {
   )
 }
 
+function accountLabel(account: RateChangeGroupAccount) {
+  return account.account_alias || `账号 #${account.account_id}`
+}
+
 function MultiplierChangeRow({
   item,
-  channelMap,
   compact = false,
 }: {
-  item: RateChangeLog
-  channelMap: Map<number, { name: string; type: string }>
+  item: RateChangeGroup
   compact?: boolean
 }) {
-  const ch = channelMap.get(item.channel_id)
+  const siteLabel = item.site_name || `站点 #${item.site_id}`
+  const accounts = item.accounts ?? []
+  const shownAccounts = accounts.slice(0, ACCOUNT_BADGE_LIMIT)
+  const hiddenCount = accounts.length - shownAccounts.length
   const delta = ratioDelta(item.old_ratio, item.new_ratio)
   const isUp = delta.direction === "up"
-  const chType = ch?.type ?? ""
 
   return (
     <li className={cn("flex items-start gap-2.5 sm:gap-3", compact ? "px-4 py-3" : "px-4 py-3.5 sm:px-6")}>
@@ -184,19 +182,25 @@ function MultiplierChangeRow({
       </div>
 
       <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
           <span className="truncate text-sm font-semibold text-foreground">{item.model_name}</span>
-          <span
-            className={cn(
-              "inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset",
-              chType === "newapi"
-                ? "bg-brand/10 text-brand ring-brand/20"
-                : "bg-foreground/5 text-foreground ring-border",
-            )}
-          >
-            {ch?.name ?? `#${item.channel_id}`}
-            {chType ? <span className="ml-1 opacity-60">{channelTypeLabel(chType)}</span> : null}
+          <span className="inline-flex max-w-full items-center truncate rounded-md bg-brand/10 px-1.5 py-0.5 text-[10px] font-medium text-brand ring-1 ring-inset ring-brand/20">
+            {siteLabel}
           </span>
+          {shownAccounts.map((account) => (
+            <span
+              key={account.account_id}
+              className="inline-flex max-w-full items-center truncate rounded-md bg-foreground/5 px-1.5 py-0.5 text-[10px] font-medium text-foreground ring-1 ring-inset ring-border"
+            >
+              {accountLabel(account)}
+            </span>
+          ))}
+          {hiddenCount > 0 ? (
+            <span className="inline-flex items-center rounded-md bg-foreground/5 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground ring-1 ring-inset ring-border">
+              {"+"}
+              {hiddenCount}
+            </span>
+          ) : null}
         </div>
         <div className="mt-1.5 flex items-center text-xs">
           <div>

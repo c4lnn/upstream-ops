@@ -51,7 +51,9 @@ import {
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -72,7 +74,7 @@ import {
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { apiFetch } from "@/lib/api";
 import { formatRatio, relativeTime } from "@/lib/format";
-import { useChannels } from "@/lib/queries";
+import { useSites } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 import type {
   RateSnapshot,
@@ -84,6 +86,7 @@ import type {
   UpstreamSyncTarget,
   UpstreamSyncTargetGroup,
   UpstreamSyncTargetProxy,
+  UpstreamSite,
 } from "@/lib/api-types";
 
 interface TargetForm {
@@ -115,7 +118,8 @@ interface SyncGroupForm {
 
 interface SyncAccountForm {
   id?: number;
-  source_channel_id: number;
+  source_site_id: number;
+  source_account_id: number;
   source_group_id: string;
   source_group_name: string;
   proxy_id: string;
@@ -154,7 +158,8 @@ const emptySyncGroupForm: SyncGroupForm = {
 };
 
 const emptySyncAccountForm: SyncAccountForm = {
-  source_channel_id: 0,
+  source_site_id: 0,
+  source_account_id: 0,
   source_group_id: "",
   source_group_name: "",
   proxy_id: "",
@@ -201,7 +206,8 @@ function platformLabel(value?: string) {
 function accountToForm(account: UpstreamSyncAccount): SyncAccountForm {
   return {
     id: account.id,
-    source_channel_id: account.source_channel_id,
+    source_site_id: account.source_site_id,
+    source_account_id: account.source_account_id,
     source_group_id:
       account.source_group_id == null ? "" : String(account.source_group_id),
     source_group_name: account.source_group_name ?? "",
@@ -240,7 +246,7 @@ function accountRateMultiplier(
 
 function sortSyncAccountRows(
   accounts: SyncAccountForm[],
-  sourceGroupsByChannel: Record<number, RateSnapshot[]>,
+  sourceGroupsByAccount: Record<number, RateSnapshot[]>,
   direction: "asc" | "desc",
 ) {
   const rateDirection = direction === "desc" ? -1 : 1;
@@ -250,8 +256,8 @@ function sortSyncAccountRows(
       index,
       rate: accountRateMultiplier(
         account,
-        account.source_channel_id
-          ? (sourceGroupsByChannel[account.source_channel_id] ?? [])
+        account.source_account_id
+          ? (sourceGroupsByAccount[account.source_account_id] ?? [])
           : [],
       ),
     }))
@@ -427,7 +433,7 @@ function TestModelPicker({
 }
 
 export function UpstreamSyncSettings() {
-  const channels = useChannels();
+  const sites = useSites();
   const { confirm, dialog } = useConfirm();
   const [targets, setTargets] = useState<UpstreamSyncTarget[]>([]);
   const [syncGroupList, setSyncGroupList] = useState<UpstreamSyncGroup[]>([]);
@@ -437,7 +443,7 @@ export function UpstreamSyncSettings() {
   const [targetProxies, setTargetProxies] = useState<UpstreamSyncTargetProxy[]>(
     [],
   );
-  const [sourceGroupsByChannel, setSourceGroupsByChannel] = useState<
+  const [sourceGroupsByAccount, setSourceGroupsByAccount] = useState<
     Record<number, RateSnapshot[]>
   >({});
   const [logs, setLogs] = useState<UpstreamSyncLog[]>([]);
@@ -551,13 +557,13 @@ export function UpstreamSyncSettings() {
     }
   }
 
-  async function loadSourceGroups(channelID: number) {
-    if (!channelID) return;
+  async function loadSourceGroups(accountID: number) {
+    if (!accountID) return;
     try {
       const list = await apiFetch<RateSnapshot[]>(
-        `/channels/${channelID}/rates`,
+        `/accounts/${accountID}/rates`,
       );
-      setSourceGroupsByChannel((prev) => ({ ...prev, [channelID]: list }));
+      setSourceGroupsByAccount((prev) => ({ ...prev, [accountID]: list }));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "加载源分组失败");
     }
@@ -597,8 +603,8 @@ export function UpstreamSyncSettings() {
     void loadTargetGroups(syncGroup.target_id);
     void loadTargetProxies(syncGroup.target_id);
     form.accounts.forEach((account) => {
-      if (account.source_channel_id)
-        void loadSourceGroups(account.source_channel_id);
+      if (account.source_account_id)
+        void loadSourceGroups(account.source_account_id);
     });
   }
 
@@ -745,11 +751,11 @@ export function UpstreamSyncSettings() {
   }
 
   function buildSyncGroupPayload(
-    groupsByChannel: Record<number, RateSnapshot[]> = sourceGroupsByChannel,
+    groupsByAccount: Record<number, RateSnapshot[]> = sourceGroupsByAccount,
   ) {
     const sortedAccounts = sortSyncAccountRows(
       syncGroupForm.accounts,
-      groupsByChannel,
+      groupsByAccount,
       syncGroupForm.rate_sort_direction,
     );
     return {
@@ -775,11 +781,11 @@ export function UpstreamSyncSettings() {
     const targetID = selectedTargetID ?? syncGroupForm.target_id;
     setBusy("sync-group");
     try {
-      const missingChannelIndex = syncGroupForm.accounts.findIndex(
-        (account) => !account.source_channel_id,
+      const missingAccountIndex = syncGroupForm.accounts.findIndex(
+        (account) => !account.source_account_id,
       );
-      if (missingChannelIndex >= 0) {
-        toast.error(`同步账号${missingChannelIndex + 1}未选择源渠道`);
+      if (missingAccountIndex >= 0) {
+        toast.error(`同步账号${missingAccountIndex + 1}未选择源账号`);
         return;
       }
       const path = syncGroupForm.id
@@ -822,7 +828,7 @@ export function UpstreamSyncSettings() {
     const ok = await confirm({
       title: `删除 ${syncGroup.name} 的托管对象？`,
       description:
-        "会删除目标 Sub2API 账号和源渠道 API Key，不会删除目标分组。",
+        "会删除目标 Sub2API 账号和源账号 API Key，不会删除目标分组。",
       confirmLabel: "删除托管对象",
       destructive: true,
     });
@@ -1153,10 +1159,10 @@ export function UpstreamSyncSettings() {
           </DialogHeader>
           <SyncGroupFormView
             syncGroupForm={syncGroupForm}
-            sourceGroupsByChannel={sourceGroupsByChannel}
+            sourceGroupsByAccount={sourceGroupsByAccount}
             targetGroups={targetGroups}
             targetProxies={targetProxies}
-            channels={channels.data ?? []}
+            sites={sites.data ?? []}
             busy={busy}
             onChange={setSyncGroupForm}
             onSave={saveSyncGroup}
@@ -1412,10 +1418,10 @@ function SyncGroupList({
 
 function SyncGroupFormView({
   syncGroupForm,
-  sourceGroupsByChannel,
+  sourceGroupsByAccount,
   targetGroups,
   targetProxies,
-  channels,
+  sites,
   busy,
   onChange,
   onSave,
@@ -1424,16 +1430,16 @@ function SyncGroupFormView({
   onLoadSourceGroups,
 }: {
   syncGroupForm: SyncGroupForm;
-  sourceGroupsByChannel: Record<number, RateSnapshot[]>;
+  sourceGroupsByAccount: Record<number, RateSnapshot[]>;
   targetGroups: UpstreamSyncTargetGroup[];
   targetProxies: UpstreamSyncTargetProxy[];
-  channels: { id: number; name: string }[];
+  sites: UpstreamSite[];
   busy: string | null;
   onChange: React.Dispatch<React.SetStateAction<SyncGroupForm>>;
   onSave: () => void;
   onCancel: () => void;
   onToggleTargetGroup: (id: number, checked: boolean) => void;
-  onLoadSourceGroups: (channelID: number) => void;
+  onLoadSourceGroups: (accountID: number) => void;
 }) {
   const filteredTargetGroups = useMemo(() => {
     const direction = syncGroupForm.rate_sort_direction === "desc" ? -1 : 1;
@@ -1452,11 +1458,11 @@ function SyncGroupFormView({
     () =>
       sortSyncAccountRows(
         syncGroupForm.accounts,
-        sourceGroupsByChannel,
+        sourceGroupsByAccount,
         syncGroupForm.rate_sort_direction,
       ),
     [
-      sourceGroupsByChannel,
+      sourceGroupsByAccount,
       syncGroupForm.accounts,
       syncGroupForm.rate_sort_direction,
     ],
@@ -1474,7 +1480,7 @@ function SyncGroupFormView({
 
   useEffect(() => {
     syncGroupForm.accounts.forEach((account, index) => {
-      if (account.source_channel_id) {
+      if (account.source_account_id) {
         void loadSourceModels(index, syncGroupForm.platform, account);
       }
     });
@@ -1506,15 +1512,15 @@ function SyncGroupFormView({
     setSourceModelsByRow({});
     setSourceModelsLoadingByRow({});
     nextAccounts.forEach((account, nextIndex) => {
-      if (account.source_channel_id) {
+      if (account.source_account_id) {
         void loadSourceModels(nextIndex, syncGroupForm.platform, account);
       }
     });
   }
 
   function sourceGroupsFor(account: SyncAccountForm) {
-    return account.source_channel_id
-      ? (sourceGroupsByChannel[account.source_channel_id] ?? [])
+    return account.source_account_id
+      ? (sourceGroupsByAccount[account.source_account_id] ?? [])
       : [];
   }
 
@@ -1523,7 +1529,7 @@ function SyncGroupFormView({
     platform: string,
     account: SyncAccountForm,
   ) {
-    if (!account.source_channel_id) {
+    if (!account.source_account_id) {
       setSourceModelsByRow((prev) => {
         const next = { ...prev };
         delete next[index];
@@ -1532,7 +1538,7 @@ function SyncGroupFormView({
       return;
     }
     const params = new URLSearchParams({
-      channel_id: String(account.source_channel_id),
+      account_id: String(account.source_account_id),
       platform,
     });
     if (account.id) params.set("sync_account_id", String(account.id));
@@ -1633,7 +1639,7 @@ function SyncGroupFormView({
                     }),
                   }));
                   syncGroupForm.accounts.forEach((account, index) => {
-                    if (account.source_channel_id) {
+                    if (account.source_account_id) {
                       void loadSourceModels(index, value, account);
                     }
                   });
@@ -1856,7 +1862,7 @@ function SyncGroupFormView({
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="min-w-44">源渠道</TableHead>
+                <TableHead className="min-w-52">源站点 / 账号</TableHead>
                 <TableHead className="min-w-44">源分组</TableHead>
                 <TableHead className="min-w-28">倍率换算</TableHead>
                 <TableHead className="min-w-32">账号计费倍率</TableHead>
@@ -1903,21 +1909,25 @@ function SyncGroupFormView({
                     <TableCell>
                       <Select
                         value={
-                          account.source_channel_id
-                            ? String(account.source_channel_id)
+                          account.source_account_id
+                            ? String(account.source_account_id)
                             : "0"
                         }
                         onValueChange={(value) => {
-                          const channelID = Number(value);
+                          const accountID = Number(value);
+                          const sourceSite = sites.find((site) =>
+                            site.accounts.some((candidate) => candidate.id === accountID),
+                          );
                           const nextAccount = {
                             ...account,
-                            source_channel_id: channelID,
+                            source_site_id: sourceSite?.id ?? 0,
+                            source_account_id: accountID,
                             source_group_id: "",
                             source_group_name: "",
                             test_model: "",
                           };
                           updateAccount(index, nextAccount);
-                          void onLoadSourceGroups(channelID);
+                          void onLoadSourceGroups(accountID);
                           void loadSourceModels(
                             index,
                             syncGroupForm.platform,
@@ -1925,18 +1935,24 @@ function SyncGroupFormView({
                           );
                         }}
                       >
-                        <SelectTrigger className="w-44">
-                          <SelectValue placeholder="选择源渠道" />
+                        <SelectTrigger className="w-52">
+                          <SelectValue placeholder="选择源账号" />
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="0">请选择</SelectItem>
-                          {channels.map((channel) => (
-                            <SelectItem
-                              key={channel.id}
-                              value={String(channel.id)}
-                            >
-                              {channel.name}
-                            </SelectItem>
+                          {sites.map((site) => (
+                            <SelectGroup key={site.id}>
+                              <SelectLabel>{site.name}</SelectLabel>
+                              {site.accounts.map((candidate) => (
+                                <SelectItem
+                                  key={candidate.id}
+                                  value={String(candidate.id)}
+                                  disabled={!candidate.monitor_enabled}
+                                >
+                                  {site.name} / {candidate.alias}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
                           ))}
                         </SelectContent>
                       </Select>
@@ -1967,7 +1983,7 @@ function SyncGroupFormView({
                             nextAccount,
                           );
                         }}
-                        disabled={!account.source_channel_id}
+                        disabled={!account.source_account_id}
                       >
                         <SelectTrigger className="w-44">
                           {(() => {

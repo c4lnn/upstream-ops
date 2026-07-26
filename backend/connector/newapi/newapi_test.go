@@ -51,8 +51,8 @@ func TestLoginAddsExtraParams(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	session, err := c.Login(context.Background(), &connector.Channel{
-		SiteURL:          srv.URL,
+	session, err := c.Login(context.Background(), &connector.AccountTarget{
+		BaseURL:          srv.URL,
 		Username:         "u",
 		Password:         "p",
 		LoginExtraParams: map[string]any{"device_id": "d1"},
@@ -87,8 +87,8 @@ func TestGetCosts(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	res, err := c.GetCosts(context.Background(), &connector.Channel{
-		SiteURL: srv.URL,
+	res, err := c.GetCosts(context.Background(), &connector.AccountTarget{
+		BaseURL: srv.URL,
 	}, &connector.AuthSession{
 		Cookie: "session=1",
 		UserID: "7",
@@ -120,8 +120,8 @@ func TestGetCostsAppliesManualRechargeMultiplier(t *testing.T) {
 
 	c := New()
 	multiplier := 2.0
-	res, err := c.GetCosts(context.Background(), &connector.Channel{
-		SiteURL:                srv.URL,
+	res, err := c.GetCosts(context.Background(), &connector.AccountTarget{
+		BaseURL:                srv.URL,
 		RechargeMultiplier:     &multiplier,
 		RechargeMultiplierMode: connector.RechargeMultiplierModeDivide,
 	}, &connector.AuthSession{
@@ -154,8 +154,8 @@ func TestGetCostsAppliesUpstreamRechargeMultiplier(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	res, err := c.GetCosts(context.Background(), &connector.Channel{
-		SiteURL:                srv.URL,
+	res, err := c.GetCosts(context.Background(), &connector.AccountTarget{
+		BaseURL:                srv.URL,
 		RechargeMultiplierMode: connector.RechargeMultiplierModeDivide,
 	}, &connector.AuthSession{
 		Cookie: "session=1",
@@ -181,7 +181,7 @@ func TestGetRechargeInfo(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	info, err := c.GetRechargeInfo(context.Background(), &connector.Channel{SiteURL: srv.URL}, &connector.AuthSession{
+	info, err := c.GetRechargeInfo(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, &connector.AuthSession{
 		Cookie: "session=1",
 		UserID: "7",
 	})
@@ -217,7 +217,7 @@ func TestCreateRecharge(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	launch, err := c.CreateRecharge(context.Background(), &connector.Channel{SiteURL: srv.URL}, &connector.AuthSession{
+	launch, err := c.CreateRecharge(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, &connector.AuthSession{
 		Cookie: "session=1",
 		UserID: "7",
 	}, connector.RechargeRequest{
@@ -247,7 +247,7 @@ func TestCreateRechargeReturnsDataError(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	_, err := c.CreateRecharge(context.Background(), &connector.Channel{SiteURL: srv.URL}, &connector.AuthSession{
+	_, err := c.CreateRecharge(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, &connector.AuthSession{
 		Cookie: "session=1",
 		UserID: "7",
 	}, connector.RechargeRequest{
@@ -261,7 +261,7 @@ func TestCreateRechargeReturnsDataError(t *testing.T) {
 
 func TestCreateRechargeRejectsFloatAmount(t *testing.T) {
 	c := New()
-	_, err := c.CreateRecharge(context.Background(), &connector.Channel{}, &connector.AuthSession{}, connector.RechargeRequest{
+	_, err := c.CreateRecharge(context.Background(), &connector.AccountTarget{}, &connector.AuthSession{}, connector.RechargeRequest{
 		Amount:        1.5,
 		PaymentMethod: "alipay",
 	})
@@ -272,15 +272,15 @@ func TestCreateRechargeRejectsFloatAmount(t *testing.T) {
 
 func TestSubscriptionUnsupported(t *testing.T) {
 	c := New()
-	_, err := c.GetSubscriptionInfo(context.Background(), &connector.Channel{}, &connector.AuthSession{})
+	_, err := c.GetSubscriptionInfo(context.Background(), &connector.AccountTarget{}, &connector.AuthSession{})
 	if err == nil || !strings.Contains(err.Error(), "不支持订阅") {
 		t.Fatalf("GetSubscriptionInfo err = %v, want unsupported error", err)
 	}
-	_, err = c.CreateSubscription(context.Background(), &connector.Channel{}, &connector.AuthSession{}, connector.SubscriptionRequest{})
+	_, err = c.CreateSubscription(context.Background(), &connector.AccountTarget{}, &connector.AuthSession{}, connector.SubscriptionRequest{})
 	if err == nil || !strings.Contains(err.Error(), "不支持订阅") {
 		t.Fatalf("CreateSubscription err = %v, want unsupported error", err)
 	}
-	_, err = c.GetSubscriptionUsage(context.Background(), &connector.Channel{}, &connector.AuthSession{})
+	_, err = c.GetSubscriptionUsage(context.Background(), &connector.AccountTarget{}, &connector.AuthSession{})
 	if err == nil || !strings.Contains(err.Error(), "不支持订阅") {
 		t.Fatalf("GetSubscriptionUsage err = %v, want unsupported error", err)
 	}
@@ -304,7 +304,7 @@ func TestListAPIKeys(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	page, err := c.ListAPIKeys(context.Background(), &connector.Channel{SiteURL: srv.URL}, &connector.AuthSession{
+	page, err := c.ListAPIKeys(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, &connector.AuthSession{
 		Cookie: "session=1",
 		UserID: "7",
 	}, connector.APIKeyQuery{Page: 2, PageSize: 10})
@@ -325,7 +325,7 @@ func TestListAPIKeyGroups(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	groups, err := c.ListAPIKeyGroups(context.Background(), &connector.Channel{SiteURL: srv.URL}, &connector.AuthSession{
+	groups, err := c.ListAPIKeyGroups(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, &connector.AuthSession{
 		Cookie: "session=1",
 		UserID: "7",
 	})
@@ -349,7 +349,7 @@ func TestGetAnnouncements(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	items, err := c.GetAnnouncements(context.Background(), &connector.Channel{SiteURL: srv.URL}, &connector.AuthSession{})
+	items, err := c.GetAnnouncements(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, &connector.AuthSession{})
 	if err != nil {
 		t.Fatalf("GetAnnouncements: %v", err)
 	}
@@ -376,7 +376,7 @@ func TestGetAnnouncementsFromNoticeOnly(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	items, err := c.GetAnnouncements(context.Background(), &connector.Channel{SiteURL: srv.URL}, &connector.AuthSession{})
+	items, err := c.GetAnnouncements(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, &connector.AuthSession{})
 	if err != nil {
 		t.Fatalf("GetAnnouncements: %v", err)
 	}
@@ -400,7 +400,7 @@ func TestGetAnnouncementsEmpty(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	items, err := c.GetAnnouncements(context.Background(), &connector.Channel{SiteURL: srv.URL}, &connector.AuthSession{})
+	items, err := c.GetAnnouncements(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, &connector.AuthSession{})
 	if err != nil {
 		t.Fatalf("GetAnnouncements: %v", err)
 	}
@@ -424,7 +424,7 @@ func TestSearchAPIKeys(t *testing.T) {
 	defer srv.Close()
 
 	c := New()
-	_, err := c.ListAPIKeys(context.Background(), &connector.Channel{SiteURL: srv.URL}, &connector.AuthSession{
+	_, err := c.ListAPIKeys(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, &connector.AuthSession{
 		Cookie: "session=1",
 		UserID: "7",
 	}, connector.APIKeyQuery{Search: "main"})
@@ -487,7 +487,7 @@ func TestCreateUpdateDeleteRevealAPIKey(t *testing.T) {
 
 	c := New()
 	session := &connector.AuthSession{Cookie: "session=1", UserID: "7"}
-	created, err := c.CreateAPIKey(context.Background(), &connector.Channel{SiteURL: srv.URL}, session, connector.APIKeyCreateRequest{
+	created, err := c.CreateAPIKey(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, session, connector.APIKeyCreateRequest{
 		Name:      "main",
 		CustomKey: "sk-custom",
 	})
@@ -497,7 +497,7 @@ func TestCreateUpdateDeleteRevealAPIKey(t *testing.T) {
 	if created.ID != 9 {
 		t.Fatalf("created id = %d, want 9", created.ID)
 	}
-	updated, err := c.UpdateAPIKey(context.Background(), &connector.Channel{SiteURL: srv.URL}, session, 9, connector.APIKeyUpdateRequest{
+	updated, err := c.UpdateAPIKey(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, session, 9, connector.APIKeyUpdateRequest{
 		Status: strPtr("disabled"),
 	})
 	if err != nil {
@@ -506,10 +506,10 @@ func TestCreateUpdateDeleteRevealAPIKey(t *testing.T) {
 	if updated.Status != "disabled" {
 		t.Fatalf("updated status = %q", updated.Status)
 	}
-	if err := c.DeleteAPIKey(context.Background(), &connector.Channel{SiteURL: srv.URL}, session, 9); err != nil {
+	if err := c.DeleteAPIKey(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, session, 9); err != nil {
 		t.Fatalf("DeleteAPIKey: %v", err)
 	}
-	key, err := c.RevealAPIKey(context.Background(), &connector.Channel{SiteURL: srv.URL}, session, 9)
+	key, err := c.RevealAPIKey(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, session, 9)
 	if err != nil {
 		t.Fatalf("RevealAPIKey: %v", err)
 	}
@@ -545,7 +545,7 @@ func TestCreateAPIKeyFallsBackToListWhenSearchMisses(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	created, err := New().CreateAPIKey(context.Background(), &connector.Channel{SiteURL: srv.URL}, &connector.AuthSession{
+	created, err := New().CreateAPIKey(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, &connector.AuthSession{
 		Cookie: "session=1",
 		UserID: "7",
 	}, connector.APIKeyCreateRequest{Name: "main"})

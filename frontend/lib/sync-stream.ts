@@ -21,8 +21,8 @@ export interface ProgressEvent {
   ok?: boolean
   data?: unknown
   time: string
-  channel_id?: number
-  channel_name?: string
+  account_id?: number
+  account_alias?: string
   index?: number
   total?: number
 }
@@ -104,17 +104,17 @@ function flushBlock(block: string, onEvent: (ev: ProgressEvent) => void) {
   }
 }
 
-/** 触发 /api/channels/:id/sync（余额 + 倍率）。 */
-export function syncChannelStream(channelID: number, options: SyncOptions) {
-  return streamSSE(`/api/channels/${channelID}/sync`, options)
+/** 触发 /api/accounts/:account_id/sync（余额 + 倍率）。 */
+export function syncAccountStream(accountID: number, options: SyncOptions) {
+  return streamSSE(`/api/accounts/${accountID}/sync`, options)
 }
 
-/** 触发 /api/channels/sync-all（余额 + 消费，逐渠道串行）。 */
-export function syncAllChannelsStream(options: SyncOptions) {
-  return streamSSE("/api/channels/sync-all", options)
+/** 触发 /api/accounts/sync-all（余额 + 消费，逐账号串行）。 */
+export function syncAllAccountsStream(options: SyncOptions) {
+  return streamSSE("/api/accounts/sync-all", options)
 }
 
-/** 触发 /api/channels/:id/test-login（仅登录验证，session 落库以便后续 sync 复用）。 */
-export function testLoginStream(channelID: number, options: SyncOptions) {
-  return streamSSE(`/api/channels/${channelID}/test-login`, options)
+/** 触发 /api/accounts/:account_id/test-login（仅登录验证，session 落库以便后续 sync 复用）。 */
+export function testAccountLoginStream(accountID: number, options: SyncOptions) {
+  return streamSSE(`/api/accounts/${accountID}/test-login`, options)
 }

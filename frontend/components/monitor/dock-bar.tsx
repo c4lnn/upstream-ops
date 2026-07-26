@@ -17,14 +17,14 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { useAddChannel } from "@/lib/add-channel-context"
+import { useAddSite } from "@/lib/add-site-context"
 
 interface DockItem {
   icon: LucideIcon
   label: string
   /** 走路由的项：点了 navigate(path)；不传则视为动作型（onAction）。 */
   path?: string
-  /** 动作型项（如 +新增渠道）。 */
+  /** 动作型项（如 +新增站点）。 */
   onAction?: () => void
   gradient: string
 }
@@ -144,7 +144,7 @@ function DockIcon({
 export function DockBar() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { openAdd } = useAddChannel()
+  const { openAddSite } = useAddSite()
 
   const items: DockItem[] = [
     {
@@ -155,8 +155,8 @@ export function DockBar() {
     },
     {
       icon: Plus,
-      label: "添加渠道",
-      onAction: openAdd,
+      label: "添加站点",
+      onAction: openAddSite,
       gradient: "from-emerald-400 via-emerald-500 to-teal-600",
     },
     {

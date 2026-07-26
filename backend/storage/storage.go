@@ -41,27 +41,16 @@ func (c DBConfig) SQLitePath() string {
 }
 
 func (c DBConfig) MySQLDSN() string {
-	return fmt.Sprintf(
-		"%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
-		c.User, c.Password, c.Host, c.Port, c.Name,
-	)
+	return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local", c.User, c.Password, c.Host, c.Port, c.Name)
 }
 
-// newGormLogger 关掉 GORM 默认 logger 对 ErrRecordNotFound 的告警噪音。
-//
-// 业务代码（如 Rates.Upsert）显式处理了"找不到就插入"，这种情况下 GORM 默认仍会
-// 把 record not found 当 Warn 打出来，造成日志看起来满是错误其实没问题。
-// IgnoreRecordNotFoundError = true 可以静默这类预期内的"未找到"。
 func newGormLogger() logger.Interface {
-	return logger.New(
-		log.New(os.Stdout, "\r\n", log.LstdFlags),
-		logger.Config{
-			SlowThreshold:             200 * time.Millisecond,
-			LogLevel:                  logger.Warn,
-			IgnoreRecordNotFoundError: true,
-			Colorful:                  true,
-		},
-	)
+	return logger.New(log.New(os.Stdout, "\r\n", log.LstdFlags), logger.Config{
+		SlowThreshold:             200 * time.Millisecond,
+		LogLevel:                  logger.Warn,
+		IgnoreRecordNotFoundError: true,
+		Colorful:                  true,
+	})
 }
 
 func Open(cfg DBConfig) (*gorm.DB, error) {
@@ -84,9 +73,7 @@ func Open(cfg DBConfig) (*gorm.DB, error) {
 		return nil, fmt.Errorf("unsupported database driver: %s", cfg.Driver)
 	}
 
-	db, err := gorm.Open(dialector, &gorm.Config{
-		Logger: newGormLogger(),
-	})
+	db, err := gorm.Open(dialector, &gorm.Config{Logger: newGormLogger()})
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -94,9 +81,7 @@ func Open(cfg DBConfig) (*gorm.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get sql.DB: %w", err)
 	}
-
-	switch driver {
-	case DBDriverSQLite:
+	if driver == DBDriverSQLite {
 		if err := db.Exec("PRAGMA journal_mode=WAL").Error; err != nil {
 			return nil, fmt.Errorf("set sqlite journal mode: %w", err)
 		}
@@ -105,21 +90,22 @@ func Open(cfg DBConfig) (*gorm.DB, error) {
 		}
 		sqlDB.SetMaxOpenConns(1)
 		sqlDB.SetMaxIdleConns(1)
-	default:
+	} else {
 		sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
 		sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
 	}
-
 	return db, nil
 }
 
-// AutoMigrate 启动时自动同步表结构。
+// AutoMigrate initializes only the final site/account schema. The old
+// channels schema has incompatible ownership semantics and must be rebuilt.
 func AutoMigrate(db *gorm.DB) error {
-	if err := dropDeletedAtColumns(db); err != nil {
-		return err
+	if db.Migrator().HasTable("channels") {
+		return fmt.Errorf("detected legacy channels schema; rebuild the database before starting this version")
 	}
-	return db.AutoMigrate(
-		&Channel{},
+	if err := db.AutoMigrate(
+		&UpstreamSite{},
+		&UpstreamAccount{},
 		&AuthSession{},
 		&CaptchaConfig{},
 		&RateSnapshot{},
@@ -137,63 +123,57 @@ func AutoMigrate(db *gorm.DB) error {
 		&UpstreamSyncAccount{},
 		&UpstreamSyncManagedAccount{},
 		&UpstreamSyncLog{},
-	)
+	); err != nil {
+		return err
+	}
+	if err := db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_rate_account_group ON rate_snapshots (account_id, stable_group_key)").Error; err != nil {
+		return fmt.Errorf("create rate account index: %w", err)
+	}
+	if err := db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_announcement_site_source ON upstream_announcements (site_id, source_key)").Error; err != nil {
+		return fmt.Errorf("create announcement site index: %w", err)
+	}
+	return validateSiteAccountIntegrity(db)
 }
 
-func dropDeletedAtColumns(db *gorm.DB) error {
-	targets := []struct {
-		table string
-		model any
-	}{
-		{table: "channels", model: &Channel{}},
-		{table: "captcha_configs", model: &CaptchaConfig{}},
-		{table: "notification_channels", model: &NotificationChannel{}},
+func validateSiteAccountIntegrity(db *gorm.DB) error {
+	var accounts []UpstreamAccount
+	if err := db.Find(&accounts).Error; err != nil {
+		return err
 	}
-
-	for _, target := range targets {
-		if !db.Migrator().HasTable(target.model) {
+	for _, account := range accounts {
+		if account.SiteID == 0 {
+			return fmt.Errorf("site/account integrity: account %d has no site", account.ID)
+		}
+		var site UpstreamSite
+		if err := db.First(&site, account.SiteID).Error; err != nil {
+			return fmt.Errorf("site/account integrity: account %d site missing: %w", account.ID, err)
+		}
+	}
+	var sites []UpstreamSite
+	if err := db.Find(&sites).Error; err != nil {
+		return err
+	}
+	for _, site := range sites {
+		if _, err := NormalizeBaseURL(site.BaseURL); err != nil {
+			return fmt.Errorf("site/account integrity: site %d base_url: %w", site.ID, err)
+		}
+		var count int64
+		if err := db.Model(&UpstreamAccount{}).Where("site_id = ?", site.ID).Count(&count).Error; err != nil {
+			return err
+		}
+		if count == 0 {
+			if site.DefaultAccountID != 0 {
+				return fmt.Errorf("site/account integrity: empty site %d has a default account", site.ID)
+			}
 			continue
 		}
-		hasColumn, err := tableHasColumn(db, target.table, "deleted_at")
-		if err != nil {
-			return fmt.Errorf("inspect %s.deleted_at: %w", target.table, err)
+		var defaultCount int64
+		if err := db.Model(&UpstreamAccount{}).Where("id = ? AND site_id = ?", site.DefaultAccountID, site.ID).Count(&defaultCount).Error; err != nil {
+			return err
 		}
-		if !hasColumn {
-			continue
-		}
-		if err := db.Exec("DELETE FROM " + target.table + " WHERE deleted_at IS NOT NULL").Error; err != nil {
-			return fmt.Errorf("delete soft-deleted rows from %s: %w", target.table, err)
-		}
-		if db.Migrator().HasIndex(target.model, "idx_"+target.table+"_deleted_at") {
-			if err := db.Migrator().DropIndex(target.model, "idx_"+target.table+"_deleted_at"); err != nil {
-				return fmt.Errorf("drop %s deleted_at index: %w", target.table, err)
-			}
-		}
-		if err := db.Migrator().DropColumn(target.model, "deleted_at"); err != nil {
-			return fmt.Errorf("drop %s.deleted_at: %w", target.table, err)
-		}
-		hasColumn, err = tableHasColumn(db, target.table, "deleted_at")
-		if err != nil {
-			return fmt.Errorf("inspect %s.deleted_at after drop: %w", target.table, err)
-		}
-		if hasColumn && db.Dialector.Name() == "sqlite" {
-			if err := db.Exec("ALTER TABLE " + target.table + " DROP COLUMN deleted_at").Error; err != nil {
-				return fmt.Errorf("drop sqlite %s.deleted_at: %w", target.table, err)
-			}
+		if defaultCount != 1 {
+			return fmt.Errorf("site/account integrity: site %d default account is invalid", site.ID)
 		}
 	}
 	return nil
-}
-
-func tableHasColumn(db *gorm.DB, table, column string) (bool, error) {
-	columns, err := db.Migrator().ColumnTypes(table)
-	if err != nil {
-		return false, err
-	}
-	for _, c := range columns {
-		if strings.EqualFold(c.Name(), column) {
-			return true, nil
-		}
-	}
-	return false, nil
 }

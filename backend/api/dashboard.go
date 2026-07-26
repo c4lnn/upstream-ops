@@ -7,7 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// registerDashboard 提供首页所需聚合视图。
+// registerDashboard provides the aggregate data used by the monitoring home.
 func registerDashboard(g *gin.RouterGroup, d *Deps) {
 	g.GET("/dashboard/summary", func(c *gin.Context) { dashboardSummary(c, d) })
 	g.GET("/dashboard/balance-trend", func(c *gin.Context) { dashboardBalanceTrend(c, d) })
@@ -15,69 +15,68 @@ func registerDashboard(g *gin.RouterGroup, d *Deps) {
 }
 
 type dashboardLowest struct {
-	ChannelID uint     `json:"channel_id"`
-	Name      string   `json:"name"`
-	Balance   *float64 `json:"balance"`
-}
-
-type dashboardChannelStat struct {
-	ID             uint     `json:"id"`
-	Name           string   `json:"name"`
-	Type           string   `json:"type"`
-	MonitorEnabled bool     `json:"monitor_enabled"`
-	LastBalance    *float64 `json:"last_balance,omitempty"`
-	TodayCost      *float64 `json:"today_cost,omitempty"`
-	TotalCost      *float64 `json:"total_cost,omitempty"`
-	LastError      string   `json:"last_error,omitempty"`
+	SiteID       uint     `json:"site_id"`
+	SiteName     string   `json:"site_name"`
+	AccountID    uint     `json:"account_id"`
+	AccountAlias string   `json:"account_alias"`
+	Balance      *float64 `json:"balance"`
 }
 
 func dashboardSummary(c *gin.Context, d *Deps) {
-	channels, err := d.Channels.List()
+	accounts, err := d.Accounts.List()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err)
 		return
 	}
 
-	stats := make([]dashboardChannelStat, 0, len(channels))
-	var totalBalance float64
-	var todayTotalCost float64
-	var totalCost float64
+	var totalBalance, todayTotalCost, totalCost float64
 	var lowest *dashboardLowest
 	var activeCount, failedCount int
-
-	for _, ch := range channels {
-		stat := dashboardChannelStat{
-			ID:             ch.ID,
-			Name:           ch.Name,
-			Type:           string(ch.Type),
-			MonitorEnabled: ch.MonitorEnabled,
-			LastBalance:    ch.LastBalance,
-			TodayCost:      ch.TodayCost,
-			TotalCost:      ch.TotalCost,
-			LastError:      ch.LastError,
+	siteNames := make(map[uint]string)
+	if d.Sites != nil {
+		sites, listErr := d.Sites.List()
+		if listErr != nil {
+			fail(c, http.StatusInternalServerError, listErr)
+			return
 		}
-		stats = append(stats, stat)
-		if ch.LastError != "" {
-			failedCount++
-		} else if ch.MonitorEnabled {
-			activeCount++
-		}
-		if ch.LastBalance != nil {
-			totalBalance += *ch.LastBalance
-			if lowest == nil || (lowest.Balance == nil) || (*ch.LastBalance < *lowest.Balance) {
-				bal := *ch.LastBalance
-				lowest = &dashboardLowest{ChannelID: ch.ID, Name: ch.Name, Balance: &bal}
-			}
-		}
-		if ch.TodayCost != nil {
-			todayTotalCost += *ch.TodayCost
-		}
-		if ch.TotalCost != nil {
-			totalCost += *ch.TotalCost
+		for _, site := range sites {
+			siteNames[site.ID] = site.Name
 		}
 	}
 
-	recentChanges, err := d.Rates.ListChanges(0, 10)
+	for _, account := range accounts {
+		if account.LastError != "" {
+			failedCount++
+		} else if account.MonitorEnabled {
+			activeCount++
+		}
+		if account.LastBalance != nil {
+			totalBalance += *account.LastBalance
+			if lowest == nil || lowest.Balance == nil || *account.LastBalance < *lowest.Balance {
+				balance := *account.LastBalance
+				lowest = &dashboardLowest{
+					SiteID:       account.SiteID,
+					SiteName:     siteNames[account.SiteID],
+					AccountID:    account.ID,
+					AccountAlias: account.Alias,
+					Balance:      &balance,
+				}
+			}
+		}
+		if account.TodayCost != nil {
+			todayTotalCost += *account.TodayCost
+		}
+		if account.TotalCost != nil {
+			totalCost += *account.TotalCost
+		}
+	}
+
+	recentGroups, _, err := d.Rates.ListChangeGroupsPage(0, 1, 10)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err)
+		return
+	}
+	decoratedChanges, err := decorateRateChangeGroups(d, recentGroups)
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err)
 		return
@@ -85,15 +84,15 @@ func dashboardSummary(c *gin.Context, d *Deps) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"data": gin.H{
-			"total_channels":      len(channels),
-			"active_channels":     activeCount,
-			"failed_channels":     failedCount,
+			"total_sites":         len(siteNames),
+			"total_accounts":      len(accounts),
+			"active_accounts":     activeCount,
+			"failed_accounts":     failedCount,
 			"total_balance":       totalBalance,
 			"today_total_cost":    todayTotalCost,
 			"total_cost":          totalCost,
 			"lowest_balance":      lowest,
-			"channels":            stats,
-			"recent_rate_changes": recentChanges,
+			"recent_rate_changes": decoratedChanges,
 		},
 	})
 }

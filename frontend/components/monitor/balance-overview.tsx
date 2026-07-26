@@ -3,7 +3,7 @@
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid } from "recharts"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { useIsMobile } from "@/hooks/use-mobile"
-import { useBalanceTrend, useCostTrend, useDashboardSummary } from "@/lib/queries"
+import { useBalanceTrend, useCostTrend, useSites } from "@/lib/queries"
 import { money } from "@/lib/format"
 import { cn } from "@/lib/utils"
 
@@ -69,9 +69,9 @@ export function BalanceOverview() {
   const isMobile = useIsMobile()
   const trend = useBalanceTrend(7)
   const costTrend = useCostTrend(7)
-  const summary = useDashboardSummary()
+  const sitesQuery = useSites()
 
-  const channels = summary.data?.channels ?? []
+  const sites = sitesQuery.data ?? []
   const trendMap = new Map<string, ChartPoint>()
 
   for (const point of trend.data ?? []) {
@@ -188,25 +188,25 @@ export function BalanceOverview() {
           )}
         </div>
 
-        {/* per-channel chips */}
-        {channels.length > 0 ? (
+        {/* per-site aggregate chips */}
+        {sites.length > 0 ? (
           <div className="mt-3 flex shrink-0 flex-wrap items-center gap-x-5 gap-y-2 border-t border-border pt-3">
-            {channels.map((c) => {
-              const isFailed = !!c.last_error
-              const isUnknown = c.last_balance == null
+            {sites.map((site) => {
+              const hasFailed = site.error_account_count > 0
+              const isUnknown = site.uncollected_count === site.account_count
               return (
-                <span key={c.id} className="inline-flex max-w-full items-center gap-1.5 text-xs">
+                <span key={site.id} className="inline-flex max-w-full items-center gap-1.5 text-xs">
                   <span
                     className={cn(
                       "size-2 rounded-full",
-                      isFailed ? "bg-danger" : isUnknown ? "bg-muted-foreground/40" : "bg-success",
+                      hasFailed ? "bg-danger" : isUnknown ? "bg-muted-foreground/40" : "bg-success",
                     )}
                   />
-                  <span className="max-w-32 truncate font-medium text-foreground sm:max-w-none">{c.name}</span>
+                  <span className="max-w-32 truncate font-medium text-foreground sm:max-w-none">{site.name}</span>
                   <span className="min-w-0 tabular-nums text-muted-foreground">
-                    {money(c.last_balance)}
+                    {money(site.total_balance)}
                     {" · 今日 "}
-                    {money(c.today_cost)}
+                    {money(site.today_cost)}
                   </span>
                 </span>
               )

@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState, type FormEvent } from "react"
-import { Plus, Trash2 } from "lucide-react"
+import { ChevronDown, Plus, Trash2 } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -32,11 +32,13 @@ import {
 import { ChevronsUpDown } from "lucide-react"
 import { apiFetch } from "@/lib/api"
 import { useTriggerRefresh } from "@/lib/refresh-context"
-import { useChannels, useMultiChannelRates } from "@/lib/queries"
+import { useMultiAccountRates, useSites } from "@/lib/queries"
+import { cn } from "@/lib/utils"
 import type {
   NotificationChannel,
   NotificationChannelType,
   NotificationEvent,
+  UpstreamSite,
 } from "@/lib/api-types"
 
 interface NotificationFormDialogProps {
@@ -70,7 +72,8 @@ interface ConfigState {
 }
 
 interface SubRow {
-  channel_ids: number[]
+  site_ids: number[]
+  account_ids: number[]
   event_mode: "all" | "custom"
   events: NotificationEvent[]
   mode: "all" | "groups"
@@ -155,16 +158,13 @@ function initialState(c?: NotificationChannel | null): FormState {
   let subs: SubRow[] = []
   if (c?.subscriptions) {
     try {
-      // 宽松解析：兼容历史 channel_id 单值格式（旧数据由后端原样返回）
       const parsed = JSON.parse(c.subscriptions) as Array<Record<string, unknown>>
       subs = parsed.map((s) => {
-        const ids = (s.channel_ids as number[] | undefined) ?? []
-        const legacyId = s.channel_id as number | undefined
-        const channel_ids =
-          ids.length > 0 ? ids : legacyId != null ? [legacyId] : []
+        const account_ids = (s.account_ids as number[] | undefined) ?? []
         const events = (s.events as NotificationEvent[] | undefined) ?? []
         return {
-          channel_ids,
+          site_ids: (s.site_ids as number[] | undefined) ?? [],
+          account_ids,
           event_mode: events.length > 0 ? "custom" : "all",
           events,
           mode: s.mode === "groups" ? "groups" : "all",
@@ -248,7 +248,7 @@ export function NotificationFormDialog({
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const refresh = useTriggerRefresh()
-  const channels = useChannels()
+  const sites = useSites()
 
   useEffect(() => {
     if (open) {
@@ -266,7 +266,7 @@ export function NotificationFormDialog({
   function addSub() {
     setForm((f) => ({
       ...f,
-      subs: [...f.subs, { channel_ids: [], event_mode: "all", events: [], mode: "all", groups: [] }],
+      subs: [...f.subs, { site_ids: [], account_ids: [], event_mode: "all", events: [], mode: "all", groups: [] }],
     }))
   }
 
@@ -289,7 +289,7 @@ export function NotificationFormDialog({
     try {
       // 校验订阅：未选上游的行禁止保存
       for (const s of form.subs) {
-        if (s.channel_ids.length === 0) {
+        if (s.site_ids.length === 0 && s.account_ids.length === 0) {
           throw new Error("订阅列表里有未选择上游的规则，请补全或删除")
         }
         if (s.event_mode === "custom" && s.events.length === 0) {
@@ -324,7 +324,8 @@ export function NotificationFormDialog({
           const rateEventsEnabled = hasRateEvents(s)
           const mode = rateEventsEnabled ? s.mode : "all"
           return {
-            channel_ids: s.channel_ids,
+            site_ids: s.site_ids,
+            account_ids: s.account_ids,
             mode,
             groups: mode === "groups" ? s.groups : [],
             events: s.event_mode === "custom" ? s.events : [],
@@ -476,7 +477,7 @@ export function NotificationFormDialog({
                     key={idx}
                     rowIndex={idx}
                     row={row}
-                    channels={(channels.data ?? []).map((c) => ({ id: c.id, name: c.name }))}
+                    sites={sites.data ?? []}
                     onChange={(patch) => updateSub(idx, patch)}
                     onRemove={() => removeSub(idx)}
                     disabled={submitting}
@@ -761,39 +762,54 @@ function ConfigFields({ type, cfg, updateCfg, disabled, isEdit }: ConfigFieldsPr
 interface SubRowEditorProps {
   rowIndex: number
   row: SubRow
-  channels: Array<{ id: number; name: string }>
+  sites: UpstreamSite[]
   onChange: (patch: Partial<SubRow>) => void
   onRemove: () => void
   disabled: boolean
 }
 
-function SubRowEditor({ rowIndex, row, channels, onChange, onRemove, disabled }: SubRowEditorProps) {
+function SubRowEditor({ rowIndex, row, sites, onChange, onRemove, disabled }: SubRowEditorProps) {
+  const [expandedSiteIDs, setExpandedSiteIDs] = useState<Set<number>>(new Set())
+  const accounts = useMemo(
+    () => sites.flatMap((site) => site.accounts.map((account) => ({
+      id: account.id,
+      name: `${site.name} / ${account.alias}`,
+    }))),
+    [sites],
+  )
   // 只有真正展开 "指定分组" 时才拉 rates，避免每行都打一次接口
   const showRateGroupFilter = hasRateEvents(row)
-  const rateFetchIDs =
-    showRateGroupFilter && row.mode === "groups" ? row.channel_ids : []
-  const rates = useMultiChannelRates(rateFetchIDs)
+  const rateFetchIDs = useMemo(() => {
+    if (!showRateGroupFilter || row.mode !== "groups") return []
+    const selected = new Set(row.account_ids)
+    for (const site of sites) {
+      if (!row.site_ids.includes(site.id)) continue
+      for (const account of site.accounts) selected.add(account.id)
+    }
+    return Array.from(selected)
+  }, [row.account_ids, row.mode, row.site_ids, showRateGroupFilter, sites])
+  const rates = useMultiAccountRates(rateFetchIDs)
 
-  const channelNameMap = useMemo(() => {
+  const accountNameMap = useMemo(() => {
     const map = new Map<number, string>()
-    for (const c of channels) map.set(c.id, c.name)
+    for (const account of accounts) map.set(account.id, account.name)
     return map
-  }, [channels])
+  }, [accounts])
 
-  const groupsByChannel = useMemo(() => {
+  const groupsByAccount = useMemo(() => {
     const map = new Map<number, Set<string>>()
     for (const r of rates.data ?? []) {
-      if (!map.has(r.channel_id)) map.set(r.channel_id, new Set())
-      map.get(r.channel_id)!.add(r.model_name)
+      if (!map.has(r.account_id)) map.set(r.account_id, new Set())
+      map.get(r.account_id)!.add(r.model_name)
     }
     return Array.from(map.entries())
-      .map(([channelId, groups]) => ({
-        channelId,
-        channelName: channelNameMap.get(channelId) ?? `渠道 ${channelId}`,
+      .map(([accountId, groups]) => ({
+        accountId,
+        accountName: accountNameMap.get(accountId) ?? `账号 ${accountId}`,
         groups: Array.from(groups).sort((a, b) => a.localeCompare(b)),
       }))
-      .sort((a, b) => a.channelName.localeCompare(b.channelName))
-  }, [rates.data, channelNameMap])
+      .sort((a, b) => a.accountName.localeCompare(b.accountName))
+  }, [rates.data, accountNameMap])
 
   const groupNames = useMemo(() => {
     const set = new Set<string>()
@@ -835,27 +851,45 @@ function SubRowEditor({ rowIndex, row, channels, onChange, onRemove, disabled }:
     onChange({ events: next })
   }
 
-  const selectedChannelCount = row.channel_ids.length
-  const allChannelsSelected =
-    channels.length > 0 && selectedChannelCount === channels.length
-  const someChannelsSelected = selectedChannelCount > 0 && !allChannelsSelected
-  const allChannelsChecked = allChannelsSelected ? true : someChannelsSelected ? "indeterminate" : false
+  const selectedScopeCount = row.site_ids.length + row.account_ids.length
+  const allSitesSelected = sites.length > 0 && sites.every((site) => row.site_ids.includes(site.id))
+  const someScopesSelected = selectedScopeCount > 0 && !allSitesSelected
+  const allSitesChecked = allSitesSelected ? true : someScopesSelected ? "indeterminate" : false
 
-  function toggleChannel(id: number, checked: boolean) {
-    const next = checked
-      ? Array.from(new Set([...row.channel_ids, id]))
-      : row.channel_ids.filter((c) => c !== id)
-    onChange({ channel_ids: next })
+  function toggleSite(site: UpstreamSite, checked: boolean) {
+    const accountIDSet = new Set(site.accounts.map((account) => account.id))
+    onChange({
+      site_ids: checked
+        ? Array.from(new Set([...row.site_ids, site.id]))
+        : row.site_ids.filter((id) => id !== site.id),
+      account_ids: row.account_ids.filter((id) => !accountIDSet.has(id)),
+    })
+  }
+
+  function toggleAccount(site: UpstreamSite, accountID: number, checked: boolean) {
+    const accountIDs = new Set(row.account_ids)
+    if (row.site_ids.includes(site.id)) {
+      for (const account of site.accounts) accountIDs.add(account.id)
+      accountIDs.delete(accountID)
+    } else if (checked) {
+      accountIDs.add(accountID)
+    } else {
+      accountIDs.delete(accountID)
+    }
+    onChange({
+      site_ids: row.site_ids.filter((id) => id !== site.id),
+      account_ids: Array.from(accountIDs),
+    })
   }
 
   return (
     <div className="space-y-2 rounded-md border border-border p-2.5">
       <div className="space-y-1.5">
         <div className="flex items-center justify-between gap-2 text-xs">
-          <span className="font-medium">选择渠道</span>
+          <span className="font-medium">选择站点或账号</span>
           <div className="flex items-center gap-1">
             <span className="text-[11px] text-muted-foreground">
-              已选 {selectedChannelCount}/{channels.length}
+              已选 {row.site_ids.length} 个站点 · {row.account_ids.length} 个账号
             </span>
             <Button
               type="button"
@@ -869,8 +903,8 @@ function SubRowEditor({ rowIndex, row, channels, onChange, onRemove, disabled }:
             </Button>
           </div>
         </div>
-        {channels.length === 0 ? (
-          <p className="text-[11px] text-muted-foreground">暂无可选上游渠道</p>
+        {sites.length === 0 ? (
+          <p className="text-[11px] text-muted-foreground">暂无可选上游站点</p>
         ) : (
           <Popover>
             <PopoverTrigger asChild>
@@ -882,11 +916,11 @@ function SubRowEditor({ rowIndex, row, channels, onChange, onRemove, disabled }:
                 disabled={disabled}
               >
                 <span className="truncate">
-                  {selectedChannelCount === 0
-                    ? "请选择渠道"
-                    : selectedChannelCount === channels.length
-                      ? "全部渠道"
-                      : `已选 ${selectedChannelCount} 个渠道`}
+                  {selectedScopeCount === 0
+                    ? "请选择站点或账号"
+                    : allSitesSelected
+                      ? "全部站点"
+                      : `${row.site_ids.length} 个站点 · ${row.account_ids.length} 个账号`}
                 </span>
                 <ChevronsUpDown className="ml-2 size-3.5 shrink-0 opacity-50" />
               </Button>
@@ -896,32 +930,79 @@ function SubRowEditor({ rowIndex, row, channels, onChange, onRemove, disabled }:
                 <div className="space-y-1 p-2">
                   <label className="flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-xs hover:bg-accent">
                     <Checkbox
-                      checked={allChannelsChecked}
+                      checked={allSitesChecked}
                       onCheckedChange={(v) =>
-                        onChange({ channel_ids: v === true ? channels.map((c) => c.id) : [] })
+                        onChange({
+                          site_ids: v === true ? sites.map((site) => site.id) : [],
+                          account_ids: [],
+                        })
                       }
                       disabled={disabled}
                     />
-                    <span className="font-medium">全选</span>
+                    <span className="font-medium">全部站点</span>
                   </label>
                   <div className="h-px bg-border" />
-                  {channels.map((c) => {
-                    const id = `ch-${rowIndex}-${c.id}`
-                    const checked = row.channel_ids.includes(c.id)
+                  {sites.map((site) => {
+                    const siteChecked = row.site_ids.includes(site.id)
+                    const siteAccountIDs = site.accounts.map((account) => account.id)
+                    const selectedAccounts = siteAccountIDs.filter((id) => row.account_ids.includes(id)).length
+                    const expanded = expandedSiteIDs.has(site.id)
                     return (
-                      <label
-                        key={c.id}
-                        htmlFor={id}
-                        className="flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-xs hover:bg-accent"
-                      >
-                        <Checkbox
-                          id={id}
-                          checked={checked}
-                          onCheckedChange={(v) => toggleChannel(c.id, !!v)}
-                          disabled={disabled}
-                        />
-                        <span className="truncate">{c.name}</span>
-                      </label>
+                      <div key={site.id} className="space-y-0.5">
+                        <div className="flex items-center gap-1 rounded px-2 py-1 text-xs hover:bg-accent">
+                          <Checkbox
+                            id={`site-${rowIndex}-${site.id}`}
+                            checked={siteChecked ? true : selectedAccounts > 0 ? "indeterminate" : false}
+                            onCheckedChange={(value) => toggleSite(site, value === true)}
+                            disabled={disabled}
+                          />
+                          <label
+                            htmlFor={`site-${rowIndex}-${site.id}`}
+                            className="min-w-0 flex-1 cursor-pointer truncate font-medium"
+                          >
+                            {site.name}
+                          </label>
+                          <span className="text-[10px] text-muted-foreground">{site.accounts.length}</span>
+                          <button
+                            type="button"
+                            className="grid size-6 place-items-center rounded hover:bg-muted"
+                            aria-label={`${expanded ? "收起" : "展开"}${site.name}账号`}
+                            onClick={() => setExpandedSiteIDs((current) => {
+                              const next = new Set(current)
+                              if (next.has(site.id)) next.delete(site.id)
+                              else next.add(site.id)
+                              return next
+                            })}
+                          >
+                            <ChevronDown className={cn("size-3 transition-transform", !expanded && "-rotate-90")} />
+                          </button>
+                        </div>
+                        {expanded ? (
+                          <div className="space-y-0.5 pl-6">
+                            {site.accounts.map((account) => {
+                              const checked = siteChecked || row.account_ids.includes(account.id)
+                              return (
+                                <label
+                                  key={account.id}
+                                  htmlFor={`account-${rowIndex}-${account.id}`}
+                                  className="flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-xs hover:bg-accent"
+                                >
+                                  <Checkbox
+                                    id={`account-${rowIndex}-${account.id}`}
+                                    checked={checked}
+                                    onCheckedChange={(value) => toggleAccount(site, account.id, value === true)}
+                                    disabled={disabled}
+                                  />
+                                  <span className="truncate">{account.alias}</span>
+                                  {site.default_account_id === account.id ? (
+                                    <span className="ml-auto text-[10px] text-muted-foreground">默认</span>
+                                  ) : null}
+                                </label>
+                              )
+                            })}
+                          </div>
+                        ) : null}
+                      </div>
                     )
                   })}
                 </div>
@@ -1032,13 +1113,13 @@ function SubRowEditor({ rowIndex, row, channels, onChange, onRemove, disabled }:
 
       {showRateGroupFilter && row.mode === "groups" ? (
         <div className="space-y-1.5">
-          {row.channel_ids.length === 0 ? (
+          {rateFetchIDs.length === 0 ? (
             <p className="text-[11px] text-muted-foreground">请先选择上游</p>
           ) : rates.loading ? (
             <p className="text-[11px] text-muted-foreground">加载分组…</p>
           ) : groupNames.length === 0 ? (
             <p className="text-[11px] text-muted-foreground">
-              所选上游暂未采集到分组数据，先去渠道页"手动刷新倍率"
+              所选上游暂未采集到分组数据，先在账号卡片中手动同步
             </p>
           ) : (
             <div className="space-y-1.5">
@@ -1057,14 +1138,14 @@ function SubRowEditor({ rowIndex, row, channels, onChange, onRemove, disabled }:
               </div>
               <ScrollArea className="max-h-64 rounded border border-border bg-muted/30">
                 <div className="space-y-2 p-2">
-                  {groupsByChannel.map(({ channelId, channelName, groups }) => (
-                    <div key={channelId} className="space-y-1">
+                  {groupsByAccount.map(({ accountId, accountName, groups }) => (
+                    <div key={accountId} className="space-y-1">
                       <p className="text-[11px] font-medium text-muted-foreground px-1">
-                        {channelName}
+                        {accountName}
                       </p>
                       <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
                         {groups.map((name) => {
-                          const id = `grp-${rowIndex}-${channelId}-${name}`
+                          const id = `grp-${rowIndex}-${accountId}-${name}`
                           const checked = row.groups.includes(name)
                           return (
                             <label
@@ -1089,7 +1170,7 @@ function SubRowEditor({ rowIndex, row, channels, onChange, onRemove, disabled }:
               </ScrollArea>
             </div>
           )}
-          {row.mode === "groups" && row.groups.length === 0 && row.channel_ids.length > 0 ? (
+          {row.mode === "groups" && row.groups.length === 0 && rateFetchIDs.length > 0 ? (
             <p className="text-[11px] text-warning">未勾选任何分组，倍率类事件不会命中</p>
           ) : null}
         </div>

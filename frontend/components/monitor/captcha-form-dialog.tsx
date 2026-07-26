@@ -186,7 +186,7 @@ export function CaptchaFormDialog({ open, onOpenChange, config }: CaptchaFormDia
           <div className="flex items-start justify-between gap-3 rounded-lg border border-border px-3 py-2">
             <div>
               <p className="text-sm font-medium">启用</p>
-              <p className="text-xs text-muted-foreground">关闭后渠道无法使用此 provider 求解</p>
+              <p className="text-xs text-muted-foreground">关闭后账号无法使用此 provider 求解</p>
             </div>
             <Switch
               checked={form.enabled}

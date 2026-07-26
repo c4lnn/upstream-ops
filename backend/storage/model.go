@@ -2,12 +2,12 @@ package storage
 
 import "time"
 
-// ChannelType 上游渠道类型。
-type ChannelType string
+// UpstreamType identifies the upstream implementation used by a site.
+type UpstreamType string
 
 const (
-	ChannelTypeNewAPI  ChannelType = "newapi"
-	ChannelTypeSub2API ChannelType = "sub2api"
+	UpstreamTypeNewAPI  UpstreamType = "newapi"
+	UpstreamTypeSub2API UpstreamType = "sub2api"
 )
 
 // CredentialMode 渠道凭据模式：
@@ -22,29 +22,36 @@ const (
 	CredentialModeToken    CredentialMode = "token"
 )
 
-// Channel 上游渠道账号。Password / Turnstile API key 等敏感字段都加密保存。
+// UpstreamSite represents one upstream instance. Its type and BaseURL are the
+// single source of truth for every account below it.
+type UpstreamSite struct {
+	ID                  uint         `gorm:"primaryKey" json:"id"`
+	Name                string       `gorm:"size:128;not null;uniqueIndex" json:"name"`
+	Type                UpstreamType `gorm:"size:32;not null;index" json:"type"`
+	BaseURL             string       `gorm:"size:512;not null" json:"base_url"`
+	SortOrder           int          `gorm:"not null;default:1" json:"sort_order"`
+	DefaultAccountID    uint         `gorm:"not null;default:0;index" json:"default_account_id"`
+	IgnoreAnnouncements bool         `gorm:"default:false" json:"ignore_announcements"`
+	CreatedAt           time.Time    `json:"created_at"`
+	UpdatedAt           time.Time    `json:"updated_at"`
+}
+
+func (UpstreamSite) TableName() string { return "upstream_sites" }
+
+// UpstreamAccount is one identity at an UpstreamSite. Password and Turnstile
+// API key related fields are encrypted at rest.
 //
 // 注意：会话凭据（access_token / refresh_token / cookie / csrf）单独存放在 AuthSession 表。
-//
-// CredentialMode + PasswordCipher 的语义重载：
-//   - password 模式（默认）：Username + PasswordCipher 存账号密码，由 Connector.Login 用
-//   - token    模式：PasswordCipher 存 JSON blob（NewAPI: {cookie,user_id} / Sub2API: {access_token,refresh_token}），
-//     channel.Service 解析后直接构造 AuthSession，跳过 Login。Username 字段在 token 模式下保留
-//     用户填写的备注（一般是邮箱），仅做展示。
-//
-// 复用 PasswordCipher 而不新增 TokenCipher 是为了让现有的 GORM 行 / 加密路径 / 迁移流程零变动。
-type Channel struct {
+type UpstreamAccount struct {
 	ID                     uint           `gorm:"primaryKey" json:"id"`
-	Name                   string         `gorm:"size:128;not null;uniqueIndex" json:"name"`
-	Type                   ChannelType    `gorm:"size:32;not null;index" json:"type"`
-	SiteURL                string         `gorm:"size:512;not null" json:"site_url"`
+	SiteID                 uint           `gorm:"not null;index;uniqueIndex:idx_account_site_alias" json:"site_id"`
+	Alias                  string         `gorm:"size:128;not null;uniqueIndex:idx_account_site_alias" json:"alias"`
 	Username               string         `gorm:"size:256;not null" json:"username"`
-	SortOrder              int            `gorm:"not null;default:1" json:"sort_order"`
+	AccountSortOrder       int            `gorm:"not null;default:1" json:"sort_order"`
 	PasswordCipher         string         `gorm:"size:4096;not null" json:"-"`
 	CredentialMode         CredentialMode `gorm:"size:16;not null;default:'password'" json:"credential_mode"`
 	LoginExtraParams       string         `gorm:"type:text" json:"login_extra_params"`
 	TurnstileEnabled       bool           `gorm:"default:false" json:"turnstile_enabled"`
-	IgnoreAnnouncements    bool           `gorm:"default:false" json:"ignore_announcements"`
 	SubscriptionEnabled    bool           `gorm:"default:false" json:"subscription_enabled"`
 	ProxyEnabled           bool           `gorm:"default:false" json:"proxy_enabled"`
 	CaptchaConfigID        *uint          `json:"captcha_config_id,omitempty"`
@@ -64,12 +71,12 @@ type Channel struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-func (Channel) TableName() string { return "channels" }
+func (UpstreamAccount) TableName() string { return "upstream_accounts" }
 
-// AuthSession 渠道登录后保存的凭据，按 ChannelID 一对一关联。
+// AuthSession stores credentials for one account after login.
 // *Cipher 字段都用 AES-GCM 加密；UserID 是上游账号 ID 字符串（非敏感），明文存放。
 type AuthSession struct {
-	ChannelID          uint       `gorm:"primaryKey" json:"channel_id"`
+	AccountID          uint       `gorm:"primaryKey" json:"account_id"`
 	UserID             string     `gorm:"size:64" json:"user_id,omitempty"`
 	AccessTokenCipher  string     `gorm:"type:text" json:"-"`
 	RefreshTokenCipher string     `gorm:"type:text" json:"-"`
@@ -112,13 +119,14 @@ type CaptchaConfig struct {
 
 func (CaptchaConfig) TableName() string { return "captcha_configs" }
 
-// RateSnapshot 渠道当前观察到的模型 / 分组倍率快照。upsert per (channel_id, model_name)。
+// RateSnapshot stores the current observed model/group rates for an account.
 // 实际的"变化历史"在 RateChangeLog；此表只保存当前状态。
 type RateSnapshot struct {
 	ID              uint    `gorm:"primaryKey" json:"id"`
-	ChannelID       uint    `gorm:"not null;uniqueIndex:idx_rate_chan_model" json:"channel_id"`
+	AccountID       uint    `gorm:"not null;index" json:"account_id"`
+	StableGroupKey  string  `gorm:"size:512;not null;default:''" json:"stable_group_key"`
 	RemoteGroupID   *int64  `json:"remote_group_id,omitempty"`
-	ModelName       string  `gorm:"size:256;not null;uniqueIndex:idx_rate_chan_model" json:"model_name"`
+	ModelName       string  `gorm:"size:256;not null;index" json:"model_name"`
 	Description     string  `gorm:"size:512" json:"description,omitempty"`
 	Ratio           float64 `gorm:"not null" json:"ratio"`
 	CompletionRatio float64 `json:"completion_ratio"`
@@ -132,7 +140,11 @@ func (RateSnapshot) TableName() string { return "rate_snapshots" }
 // RateChangeLog 倍率变化历史。每次扫描发现差异时写入一行。
 type RateChangeLog struct {
 	ID                 uint      `gorm:"primaryKey" json:"id"`
-	ChannelID          uint      `gorm:"not null;index" json:"channel_id"`
+	SiteID             uint      `gorm:"not null;default:0;index" json:"site_id"`
+	AccountID          uint      `gorm:"not null;index" json:"account_id"`
+	ScanRunID          string    `gorm:"size:64;index" json:"scan_run_id,omitempty"`
+	StableGroupKey     string    `gorm:"size:512;index" json:"stable_group_key,omitempty"`
+	ChangeType         string    `gorm:"size:32;index" json:"change_type,omitempty"`
 	ModelName          string    `gorm:"size:256;not null;index" json:"model_name"`
 	OldRatio           *float64  `json:"old_ratio,omitempty"`
 	NewRatio           float64   `gorm:"not null" json:"new_ratio"`
@@ -146,8 +158,9 @@ func (RateChangeLog) TableName() string { return "rate_change_logs" }
 // UpstreamAnnouncement 保存从上游渠道同步到的公告。
 type UpstreamAnnouncement struct {
 	ID              uint       `gorm:"primaryKey" json:"id"`
-	ChannelID       uint       `gorm:"not null;uniqueIndex:idx_announcement_chan_source;index" json:"channel_id"`
-	SourceKey       string     `gorm:"size:512;not null;uniqueIndex:idx_announcement_chan_source" json:"source_key"`
+	SiteID          uint       `gorm:"not null;default:0;index" json:"site_id"`
+	AccountID       uint       `gorm:"not null;index" json:"account_id"`
+	SourceKey       string     `gorm:"size:512;not null" json:"source_key"`
 	Title           string     `gorm:"size:512" json:"title,omitempty"`
 	Content         string     `gorm:"type:text;not null" json:"content"`
 	Type            string     `gorm:"size:64" json:"type,omitempty"`
@@ -164,7 +177,7 @@ func (UpstreamAnnouncement) TableName() string { return "upstream_announcements"
 // BalanceSnapshot 周期性余额采样，用于图表展示。
 type BalanceSnapshot struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
-	ChannelID uint      `gorm:"not null;index" json:"channel_id"`
+	AccountID uint      `gorm:"not null;index" json:"account_id"`
 	Balance   float64   `gorm:"not null" json:"balance"`
 	SampledAt time.Time `gorm:"not null;index" json:"sampled_at"`
 }
@@ -174,7 +187,7 @@ func (BalanceSnapshot) TableName() string { return "balance_snapshots" }
 // CostSnapshot 周期性消费采样，用于图表展示。
 type CostSnapshot struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
-	ChannelID uint      `gorm:"not null;index" json:"channel_id"`
+	AccountID uint      `gorm:"not null;index" json:"account_id"`
 	TodayCost float64   `gorm:"not null" json:"today_cost"`
 	SampledAt time.Time `gorm:"not null;index" json:"sampled_at"`
 }
@@ -234,32 +247,22 @@ const (
 
 // NotificationLog 通知发送记录。
 type NotificationLog struct {
-	ID                uint              `gorm:"primaryKey" json:"id"`
-	ChannelID         uint              `gorm:"not null;index" json:"channel_id"`
-	UpstreamChannelID uint              `gorm:"not null;default:0;index" json:"upstream_channel_id,omitempty"`
-	Event             NotificationEvent `gorm:"size:64;not null;index" json:"event"`
-	Subject           string            `gorm:"size:512;not null" json:"subject"`
-	Body              string            `gorm:"type:text" json:"body"`
-	Success           bool              `gorm:"not null" json:"success"`
-	ErrorMessage      string            `gorm:"type:text" json:"error_message,omitempty"`
-	SentAt            time.Time         `gorm:"not null;index" json:"sent_at"`
+	ID                    uint              `gorm:"primaryKey" json:"id"`
+	NotificationChannelID uint              `gorm:"not null;index" json:"notification_channel_id"`
+	AccountID             uint              `gorm:"not null;default:0;index" json:"account_id,omitempty"`
+	SiteID                uint              `gorm:"not null;default:0;index" json:"site_id,omitempty"`
+	Event                 NotificationEvent `gorm:"size:64;not null;index" json:"event"`
+	Subject               string            `gorm:"size:512;not null" json:"subject"`
+	Body                  string            `gorm:"type:text" json:"body"`
+	Success               bool              `gorm:"not null" json:"success"`
+	ErrorMessage          string            `gorm:"type:text" json:"error_message,omitempty"`
+	SentAt                time.Time         `gorm:"not null;index" json:"sent_at"`
 }
 
 func (NotificationLog) TableName() string { return "notification_logs" }
 
-// NotificationCooldown 跨重启持久化的通知冷却记录。
-//
-// 业务键 (ChannelID, Event)：标记某渠道某类事件最近一次发送时间。
-// Dispatcher 在发送 cooldown-aware 事件（如 balance_low）前查这张表，
-// 命中且未过 cooldown 就跳过。
-//
-// 不和 NotificationLog 合并是因为：
-//   - NotificationLog 是审计/历史日志（用户可见、可清理）
-//   - NotificationCooldown 是去抖控制平面（仅最新一条、原子 upsert）
-//
-// ChannelID 这里指的是**上游渠道**（storage.Channel），不是通知渠道。
 type NotificationCooldown struct {
-	ChannelID  uint              `gorm:"primaryKey" json:"channel_id"`
+	AccountID  uint              `gorm:"primaryKey" json:"account_id"`
 	Event      NotificationEvent `gorm:"primaryKey;size:64" json:"event"`
 	LastSentAt time.Time         `gorm:"not null" json:"last_sent_at"`
 	UpdatedAt  time.Time         `json:"updated_at"`
@@ -279,7 +282,7 @@ const (
 // MonitorLog 每次扫描 / 登录尝试的结果，便于诊断失败。
 type MonitorLog struct {
 	ID           uint       `gorm:"primaryKey" json:"id"`
-	ChannelID    uint       `gorm:"not null;index" json:"channel_id"`
+	AccountID    uint       `gorm:"not null;index" json:"account_id"`
 	Job          MonitorJob `gorm:"size:32;not null;index" json:"job"`
 	Success      bool       `gorm:"not null" json:"success"`
 	ErrorMessage string     `gorm:"type:text" json:"error_message,omitempty"`
@@ -362,7 +365,8 @@ type UpstreamSyncAccount struct {
 	ID               uint      `gorm:"primaryKey" json:"id"`
 	SyncGroupID      uint      `gorm:"not null;index" json:"sync_group_id"`
 	Position         int       `gorm:"not null;default:0" json:"position"`
-	SourceChannelID  uint      `gorm:"not null;index" json:"source_channel_id"`
+	SourceSiteID     uint      `gorm:"not null;default:0;index" json:"source_site_id"`
+	SourceAccountID  uint      `gorm:"not null;index" json:"source_account_id"`
 	SourceGroupID    *int64    `json:"source_group_id,omitempty"`
 	SourceGroupName  string    `gorm:"size:256;not null;default:''" json:"source_group_name,omitempty"`
 	ProxyID          *int64    `json:"proxy_id,omitempty"`

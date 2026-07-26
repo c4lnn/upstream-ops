@@ -53,35 +53,56 @@ UpstreamOps focuses on these problems:
 
 ## Features
 
-### Upstream Channel Management
+### Upstream Sites and Accounts
 
-- Supports NewAPI and Sub2API upstreams.
+- Supports NewAPI and Sub2API upstream sites.
+- A site represents one real upstream instance and exclusively owns its type and normalized `base_url`.
+- Each site can contain multiple independent accounts. Accounts hold credentials, sessions, monitoring state, balance, spending, rates, and account-level settings only.
+- A non-empty site has one default account. Accounts cannot move between sites.
+- Changing a site's `base_url` requires explicit confirmation; it clears all account sessions and pauses monitoring before any credential can be sent to the new endpoint.
 - Supports username/password credentials and token/cookie credentials.
-- Enables or disables monitoring per channel.
-- Supports custom channel sort order; higher values are displayed and monitored first.
-- Configures low-balance alert thresholds.
-- Tests login and manually syncs balances and rates.
-- Supports extra login form parameters for modified NewAPI or Sub2API login endpoints.
-- Supports Cloudflare Turnstile solving for upstream login flows.
-- Opens upstream site URLs directly from channel cards.
-- Supports clearing saved login information from channel cards.
-- Deleting a channel cleans related snapshots, rates, announcements, notification cooldowns, and notification logs.
+- Enables or disables monitoring per account and supports account sort order and low-balance alert thresholds.
+- Tests login and manually syncs balances and rates per account.
+- Supports extra login form parameters and Cloudflare Turnstile solving for upstream login flows.
+- Site headers expose the one upstream URL; account cards never edit URLs.
+- Deleting an account cleans related snapshots, rates, notification cooldowns, and notification logs. Deleting a site can explicitly cascade through all of its accounts and announcements.
+
+#### Site-account configuration bundles
+
+Sites can be exported as `upstream-ops/site-account-bundle` version 1 JSON configuration bundles and imported into another instance after a side-effect-free preview.
+
+- A site contains `type` and `base_url`; accounts contain only account-level configuration and do not depend on database IDs.
+- Default exports are redacted. A protected export requires an explicit credential option and an export password; credentials are re-encrypted with that password and the password is never stored.
+- `create_only` creates only missing sites and accounts. `upsert` also updates transferable configuration. Neither strategy deletes local objects absent from the bundle.
+- A changed site endpoint is a blocking change in `upsert` until confirmed. Commit reuses the session-clearing and monitoring-pause semantics without making remote calls.
+- Legacy `upstream-ops/channel-bundle` files and account-level `type`, `site_url`, or `base_url` fields are rejected without conversion.
+
+### Breaking Database Upgrade
+
+This version supports only the final `upstream_sites` and `upstream_accounts` schema. Existing `channels` tables, `channel_id` relations, `/api/channels` routes, and channel-bundle files are not compatible and are never migrated online.
+
+Back up anything you need manually, then stop the service and recreate the development database before starting this version:
+
+- SQLite: remove the configured database file, normally `data/upstream-ops.db` or `DATABASE_PATH`.
+- MySQL: drop and recreate the development schema named by `DATABASE_NAME`.
+
+Startup refuses an old `channels` schema and reports that the database must be rebuilt.
 
 ### Sub2API Upstream Synchronization
 
 - Adds an **Upstream Sync** tab to system settings for managing writable Sub2API target upstreams.
 - Stores target addresses and encrypted Admin API Keys, checks connectivity, synchronizes target groups, and queries proxy lists.
-- Manages local synchronization groups and accounts by source channel, source group, target group, proxy, concurrency, weight, rate conversion, model limits, pool mode, and custom error codes.
+- Manages local synchronization groups and accounts by source site, source account, source group, target group, proxy, concurrency, weight, rate conversion, model limits, pool mode, and custom error codes.
 - Supports upstream model synchronization and custom model lists. Source models can be queried before applying a synchronization group.
 - Supports account testing with a selected model; failed tests disable scheduling for that target account.
-- Supports name templates with `{同步分组ID}`, `{渠道ID}`, and `{源分组ID}` placeholders.
+- Supports name templates with `{同步分组ID}`, `{账号ID}`, and `{源分组ID}` placeholders.
 - Supports manual apply, managed-object deletion, and paginated execution logs.
 - Enabled synchronization groups are reapplied after scheduled rate scans.
 - Synchronization group changes and apply results can trigger `upstream_sync_group_changed` notifications.
 
 ### Balance and Spending Monitoring
 
-- Shows total balance, today spending, total spending, lowest-balance channel, and abnormal channel count.
+- Shows total balance, today spending, total spending, the lowest-balance account, and abnormal account count.
 - Periodically collects balance and spending data.
 - Displays balance history trends.
 - Pushes notifications when balance falls below the configured threshold.
@@ -93,17 +114,18 @@ UpstreamOps focuses on these problems:
 - Syncs upstream model or group rates.
 - Stores current rate snapshots.
 - Records rate change history.
-- Supports paginated rate change history and channel filters.
+- Supports paginated rate change history and account filters.
+- Aggregates the recent-changes feed and full history by scan run (`scan_run_id`): identical changes within one run merge into a single entry listing every affected account (truncated to `+N` beyond 3). Pagination totals and the daily change KPI count aggregated entries, matching the "N items" wording used in notifications; account-filtered views stay per account.
 - Sends rate change notifications.
 - Merges multiple rate changes from the same scan into one notification.
 - Merges added and removed groups in the same scan into one structure-change notification.
 - Filters small rate changes by minimum percentage.
-- Supports notification subscriptions filtered by upstream channel and rate group.
-- Provides a full channel group overview with search and sorting by channel or rate.
+- Supports notification subscriptions filtered by upstream site, account, and rate group.
+- Provides a full account group overview with search and sorting by account or rate.
 
 ### Subscription Management and Usage Monitoring
 
-For Sub2API upstream channels, UpstreamOps provides subscription lifecycle management and usage monitoring:
+For Sub2API upstream accounts, UpstreamOps provides subscription lifecycle management and usage monitoring:
 
 - Queries upstream subscription plans and payment methods.
 - Purchases or renews subscriptions.
@@ -127,7 +149,7 @@ For Sub2API upstream channels, UpstreamOps provides subscription lifecycle manag
 
 - Supports HTTP, HTTPS, and SOCKS5 proxies.
 - Supports proxy username and password.
-- Allows upstream channels, notification channels, and captcha providers to opt in separately.
+- Allows upstream accounts, notification channels, and captcha providers to opt in separately.
 - Allows version checks to use the proxy separately.
 - Configures upstream request timeout and `User-Agent`.
 - Provides proxy connectivity testing in the system settings page.
@@ -142,9 +164,9 @@ For Sub2API upstream channels, UpstreamOps provides subscription lifecycle manag
 - Shows recent announcements on the dashboard.
 - Supports paginated announcement queries and detail views.
 - Renders announcement details as Markdown.
-- Cleans up related announcements when an upstream channel is deleted.
+- Cleans up related announcements when an upstream site is deleted.
 - Supports retention-based announcement cleanup.
-- Supports channel-level `ignore_announcements`.
+- Supports site-level `ignore_announcements`.
 
 ### Notification Channels
 
@@ -161,12 +183,13 @@ Supported notification channels:
 Notification channels support subscription filters:
 
 - Empty or `[]`: receive all events.
+- Select whole sites or individual accounts.
 - `mode=all`: receive all events from selected upstreams.
-- `mode=groups`: receive only selected rate groups for rate-related events. Announcement, balance, login failure, and monitor failure events are still filtered by upstream channel.
+- `mode=groups`: receive only selected rate groups for rate-related events. Announcement, balance, login failure, and monitor failure events are still filtered by the selected site or account.
 
 ### Upstream API Key Management
 
-From each channel card, you can manage upstream API keys:
+From each account card, you can manage upstream API keys:
 
 - List API keys.
 - Search by name or key.
@@ -180,7 +203,7 @@ Available fields depend on the upstream type and its API capability.
 
 ### Recharge and Redeem
 
-From each channel card, you can handle upstream recharge and redeem workflows:
+From each account card, you can handle upstream recharge and redeem workflows:
 
 - Query upstream recharge configuration.
 - Supports upstream-provided payment methods such as Alipay and WeChat Pay.
@@ -188,7 +211,7 @@ From each channel card, you can handle upstream recharge and redeem workflows:
 - Prefers QR code on desktop and redirect on mobile.
 - Redeems redeem codes online.
 - Shows returned balance, concurrency, group subscription, validity period, and related results.
-- Sub2API channels additionally support subscription purchase and renewal.
+- Sub2API accounts additionally support subscription purchase and renewal.
 
 ### System Settings
 
@@ -244,7 +267,7 @@ ADMIN_USERNAME=admin
 ADMIN_PASSWORD=replace-with-a-strong-password
 ```
 
-Docker pulls `ghcr.io/bejix/upstream-ops:${IMAGE_TAG:-latest}` by default. Configuration and data are stored in the host `data/` directory.
+Docker pulls `ghcr.io/c4lnn/upstream-ops:${IMAGE_TAG:-latest}` by default. Configuration and data are stored in the host `data/` directory.
 
 Start:
 
@@ -277,7 +300,7 @@ IMAGE_TAG=latest
 For production, pin a specific version:
 
 ```env
-IMAGE_TAG=v0.0.6
+IMAGE_TAG=v0.1.0
 ```
 
 ## MySQL Deployment
@@ -420,7 +443,7 @@ upstream:
 - `proxy.username` / `proxy.password`: optional proxy authentication.
 - `upstream.timeoutSeconds`: upstream request timeout.
 - `upstream.userAgent`: upstream request `User-Agent`.
-- When `proxy.enabled=false`, per-channel `proxy_enabled` settings do not take effect.
+- When `proxy.enabled=false`, per-account `proxy_enabled` settings do not take effect.
 
 Proxy test endpoint:
 
@@ -428,9 +451,11 @@ Proxy test endpoint:
 POST /api/settings/proxy/test
 ```
 
-## Upstream Channel Configuration
+## Upstream Site and Account Configuration
 
-Upstream channels can enable `proxy_enabled` individually. Upstream login, balance sync, rate sync, announcement sync, API key management, recharge, redeem, and subscription APIs use proxy only when both global proxy and channel proxy are enabled.
+Create the site first with its name, type, and one normalized `base_url`, then create one or more accounts under that site. Accounts can enable `proxy_enabled` individually. Upstream login, balance sync, rate sync, announcement sync, API key management, recharge, redeem, and subscription APIs use proxy only when both global proxy and account proxy are enabled.
+
+An account never accepts a separate type or URL. Updating a site's URL requires `confirm_base_url_change=true`; that clears all account sessions and pauses monitoring for the site.
 
 ### NewAPI
 
@@ -438,9 +463,9 @@ NewAPI supports two credential modes.
 
 Username/password mode:
 
-- Provide upstream site URL, username, and password.
+- Provide the account username and password. The URL belongs to the parent site.
 - If the login endpoint requires extra fields, provide a JSON object in extra form parameters.
-- If Turnstile is enabled, configure a captcha provider first, then enable Turnstile in the channel.
+- If Turnstile is enabled, configure a captcha provider first, then enable Turnstile on the account.
 
 Token/cookie mode:
 
@@ -460,7 +485,7 @@ NewAPI token mode also supports the system access token (`user.access_token`, th
 }
 ```
 
-When editing a NewAPI token/cookie channel, the form shows the saved `user_id` for reuse, while the saved cookie or access token remains hidden.
+When editing a NewAPI token/cookie account, the form shows the saved `user_id` for reuse, while the saved cookie or access token remains hidden.
 
 ### Sub2API
 
@@ -479,7 +504,7 @@ Token mode credentials:
 
 ### Clear Login Information
 
-The channel card menu provides a clear-login action:
+The account card menu provides a clear-login action:
 
 - Password mode: clears only cached login sessions.
 - Token mode: clears cached sessions and the saved token/cookie credential JSON.
@@ -575,17 +600,18 @@ Messages are sent through `https://{uid}.push.ft07.com/send/{sendkey}.send`.
 
 ## Subscription Rules
 
-Notification channels can limit which upstreams, events, or rate groups they receive. Empty value, empty string, `null`, or `[]` means all upstreams and all events.
+Notification channels can limit which sites, accounts, events, or rate groups they receive. Empty value, empty string, `null`, or `[]` means all upstreams and all events.
 
 ```json
 [
-  { "channel_ids": [1, 2], "mode": "all" },
-  { "channel_ids": [3], "mode": "groups", "groups": ["default", "pro"], "events": ["rate_changed"] },
-  { "channel_ids": [4], "mode": "all", "events": ["announcement", "monitor_failed"] }
+  { "site_ids": [1], "mode": "all" },
+  { "account_ids": [3], "mode": "groups", "groups": ["default", "pro"], "events": ["rate_changed"] },
+  { "account_ids": [4], "mode": "all", "events": ["announcement", "monitor_failed"] }
 ]
 ```
 
-- `channel_ids`: upstream channel ID list. Historical `channel_id` single-value rules are still accepted.
+- `site_ids`: upstream site ID list.
+- `account_ids`: upstream account ID list.
 - `events`: event type list. Empty means all events for that upstream.
 - `mode=all`: receive all rate groups.
 - `mode=groups`: receive only selected groups for rate-related events.
@@ -621,42 +647,61 @@ Notification logs:
 GET /api/notifications/logs?page=1&page_size=20
 ```
 
-Notification log rows include the upstream channel ID when the event is tied to a specific upstream channel.
+Notification log rows include `site_id` and `account_id` when an event is tied to a specific upstream account.
 
 Rate change logs:
 
 ```text
 GET /api/rate-changes?page=1&page_size=20
-GET /api/rate-changes?channel_id=1&page=1&page_size=20
+GET /api/rate-changes?account_id=1&page=1&page_size=20
 ```
 
-Channels:
+Sites and accounts:
 
 ```text
-GET /api/channels?page=1&page_size=20
-GET /api/channels?page=1&page_size=-1
-POST /api/channels/:id/clear-login-info
+GET    /api/sites
+POST   /api/sites
+GET    /api/sites/:site_id
+PUT    /api/sites/:site_id
+DELETE /api/sites/:site_id?cascade=true
+POST   /api/sites/:site_id/accounts
+POST   /api/sites/:site_id/default-account
+POST   /api/sites/:site_id/sync
+GET    /api/accounts?page=1&page_size=20
+GET    /api/accounts?page=1&page_size=-1
+GET    /api/accounts/:account_id
+PUT    /api/accounts/:account_id
+DELETE /api/accounts/:account_id?replacement_account_id=:id
+POST   /api/accounts/:account_id/clear-login-info
 ```
 
 Recharge:
 
 ```text
-GET  /api/channels/:id/recharge-info
-POST /api/channels/:id/recharge
+GET  /api/accounts/:account_id/recharge-info
+POST /api/accounts/:account_id/recharge
 ```
 
 Redeem:
 
 ```text
-POST /api/channels/:id/redeem
+POST /api/accounts/:account_id/redeem
 ```
 
 Subscription:
 
 ```text
-GET  /api/channels/:id/subscription-info
-POST /api/channels/:id/subscription
-GET  /api/channels/:id/subscription-usage
+GET  /api/accounts/:account_id/subscription-info
+POST /api/accounts/:account_id/subscription
+GET  /api/accounts/:account_id/subscription-usage
+```
+
+Site-account configuration bundles:
+
+```text
+POST /api/site-account-bundles/export
+POST /api/site-account-bundles/import/preview
+POST /api/site-account-bundles/import
 ```
 
 Captcha providers:
@@ -680,10 +725,10 @@ POST   /api/upstream-sync/targets/:id/check
 POST   /api/upstream-sync/targets/:id/groups/sync
 GET    /api/upstream-sync/targets/:id/groups
 GET    /api/upstream-sync/targets/:id/proxies
-GET    /api/upstream-sync/source-models?channel_id=1&platform=openai
+GET    /api/upstream-sync/source-models?account_id=1&platform=openai
 ```
 
-`channel_id` is required. `platform` defaults to OpenAI-compatible model discovery and also supports `gemini`. Optional filters include `source_group_id`, `source_group_name`, and `sync_account_id`.
+`account_id` is required. `platform` defaults to OpenAI-compatible model discovery and also supports `gemini`. Optional filters include `source_group_id`, `source_group_name`, and `sync_account_id`.
 
 Synchronization groups:
 
@@ -697,14 +742,15 @@ POST   /api/upstream-sync/sync-groups/:id/delete-managed
 GET    /api/upstream-sync/sync-groups/:id/logs?page=1&page_size=20
 ```
 
-The target Admin API Key is encrypted at rest. The managed-object action requests deletion of the remote Sub2API account and source-channel API key, clears the local mapping, and leaves target groups unchanged. Deleting a target or synchronization group only removes local records, so run the managed-object action first when remote cleanup is required.
+The target Admin API Key is encrypted at rest. The managed-object action requests deletion of the remote Sub2API account and source-account API key, clears the local mapping, and leaves target groups unchanged. Deleting a target or synchronization group only removes local records, so run the managed-object action first when remote cleanup is required.
 
 SSE progress endpoints:
 
 ```text
-POST /api/channels/:id/test-login
-POST /api/channels/:id/sync
-POST /api/channels/sync-all
+POST /api/accounts/:account_id/test-login
+POST /api/accounts/:account_id/sync
+POST /api/accounts/sync-all
+POST /api/sites/:site_id/sync
 ```
 
 ## Runtime Configuration Hot Reload

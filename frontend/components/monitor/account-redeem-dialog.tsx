@@ -13,23 +13,22 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { apiFetch } from "@/lib/api"
-import { channelTypeLabel } from "@/lib/format"
 import { useTriggerRefresh } from "@/lib/refresh-context"
-import type { Channel, ChannelRedeemResult } from "@/lib/api-types"
+import type { AccountRedeemResult, UpstreamAccount } from "@/lib/api-types"
 
-interface ChannelRedeemDialogProps {
+interface AccountRedeemDialogProps {
   open: boolean
   onOpenChange: (v: boolean) => void
-  channel: Channel | null
-  onSuccess?: (result: ChannelRedeemResult) => void
+  account: UpstreamAccount | null
+  onSuccess?: (result: AccountRedeemResult) => void
 }
 
-export function ChannelRedeemDialog({
+export function AccountRedeemDialog({
   open,
   onOpenChange,
-  channel,
+  account,
   onSuccess,
-}: ChannelRedeemDialogProps) {
+}: AccountRedeemDialogProps) {
   const [code, setCode] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -40,15 +39,15 @@ export function ChannelRedeemDialog({
       setCode("")
       setError(null)
     }
-  }, [open, channel])
+  }, [open, account])
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
-    if (!channel) return
+    if (!account) return
     setSubmitting(true)
     setError(null)
     try {
-      const result = await apiFetch<ChannelRedeemResult>(`/channels/${channel.id}/redeem`, {
+      const result = await apiFetch<AccountRedeemResult>(`/accounts/${account.id}/redeem`, {
         method: "POST",
         body: JSON.stringify({ code }),
       })
@@ -69,7 +68,7 @@ export function ChannelRedeemDialog({
         <DialogHeader>
           <DialogTitle>兑换码</DialogTitle>
           <DialogDescription>
-            {channel ? `${channel.name} · ${channelTypeLabel(channel.type)}` : "输入兑换码后立即在线兑换。"}
+            {account ? account.alias : "输入兑换码后立即在线兑换。"}
           </DialogDescription>
         </DialogHeader>
 

@@ -9,17 +9,17 @@ import (
 
 func registerMonitorLogs(g *gin.RouterGroup, d *Deps) {
 	g.GET("/monitor-logs", func(c *gin.Context) {
-		var channelID uint
-		if s := c.Query("channel_id"); s != "" {
+		var accountID uint
+		if s := c.Query("account_id"); s != "" {
 			id, err := strconv.ParseUint(s, 10, 64)
 			if err != nil {
 				fail(c, http.StatusBadRequest, err)
 				return
 			}
-			channelID = uint(id)
+			accountID = uint(id)
 		}
 		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
-		list, err := d.MonLogs.List(channelID, limit)
+		list, err := d.MonLogs.List(accountID, limit)
 		if err != nil {
 			fail(c, http.StatusInternalServerError, err)
 			return

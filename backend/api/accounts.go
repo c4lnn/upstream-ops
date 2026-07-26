@@ -10,68 +10,64 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bejix/upstream-ops/backend/channel"
+	"github.com/bejix/upstream-ops/backend/account"
 	"github.com/bejix/upstream-ops/backend/connector"
 	"github.com/bejix/upstream-ops/backend/progress"
 	"github.com/bejix/upstream-ops/backend/storage"
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 )
 
-func registerChannels(g *gin.RouterGroup, d *Deps) {
-	gp := g.Group("/channels")
-	gp.GET("", func(c *gin.Context) { listChannels(c, d) })
-	gp.POST("", func(c *gin.Context) { createChannel(c, d) })
-	gp.POST("/sync-all", func(c *gin.Context) { syncAllChannels(c, d) })
-	gp.GET("/:id", func(c *gin.Context) { getChannel(c, d) })
-	gp.PUT("/:id", func(c *gin.Context) { updateChannel(c, d) })
-	gp.DELETE("/:id", func(c *gin.Context) { deleteChannel(c, d) })
-	gp.POST("/:id/clear-login-info", func(c *gin.Context) { clearChannelLoginInfo(c, d) })
-	gp.POST("/:id/enable", func(c *gin.Context) { toggleChannel(c, d, true) })
-	gp.POST("/:id/disable", func(c *gin.Context) { toggleChannel(c, d, false) })
-	gp.POST("/:id/test-login", func(c *gin.Context) { testLogin(c, d) })
-	gp.POST("/:id/refresh-balance", func(c *gin.Context) { refreshBalance(c, d) })
-	gp.POST("/:id/refresh-rates", func(c *gin.Context) { refreshRates(c, d) })
-	gp.POST("/:id/redeem", func(c *gin.Context) { redeemChannel(c, d) })
-	gp.GET("/:id/recharge-info", func(c *gin.Context) { channelRechargeInfo(c, d) })
-	gp.POST("/:id/recharge", func(c *gin.Context) { createChannelRecharge(c, d) })
-	gp.GET("/:id/subscription-info", func(c *gin.Context) { channelSubscriptionInfo(c, d) })
-	gp.POST("/:id/subscription", func(c *gin.Context) { createChannelSubscription(c, d) })
-	gp.GET("/:id/subscription-usage", func(c *gin.Context) { channelSubscriptionUsage(c, d) })
-	gp.GET("/:id/api-keys/groups", func(c *gin.Context) { listChannelAPIKeyGroups(c, d) })
-	gp.GET("/:id/api-keys", func(c *gin.Context) { listChannelAPIKeys(c, d) })
-	gp.POST("/:id/api-keys", func(c *gin.Context) { createChannelAPIKey(c, d) })
-	gp.PUT("/:id/api-keys/:key_id", func(c *gin.Context) { updateChannelAPIKey(c, d) })
-	gp.DELETE("/:id/api-keys/:key_id", func(c *gin.Context) { deleteChannelAPIKey(c, d) })
-	gp.POST("/:id/api-keys/:key_id/reveal", func(c *gin.Context) { revealChannelAPIKey(c, d) })
-	gp.POST("/:id/sync", func(c *gin.Context) { syncChannel(c, d) })
-	gp.GET("/:id/rates", func(c *gin.Context) { channelRates(c, d) })
-	gp.GET("/:id/balance-history", func(c *gin.Context) { balanceHistory(c, d) })
+func registerAccounts(g *gin.RouterGroup, d *Deps) {
+	gp := g.Group("/accounts")
+	gp.GET("", func(c *gin.Context) { listAccounts(c, d) })
+	gp.POST("/sync-all", func(c *gin.Context) { syncAllAccounts(c, d) })
+	gp.GET("/:account_id", func(c *gin.Context) { getAccount(c, d) })
+	gp.PUT("/:account_id", func(c *gin.Context) { updateAccount(c, d) })
+	gp.DELETE("/:account_id", func(c *gin.Context) { deleteAccount(c, d) })
+	gp.POST("/:account_id/clear-login-info", func(c *gin.Context) { clearAccountLoginInfo(c, d) })
+	gp.POST("/:account_id/enable", func(c *gin.Context) { toggleAccount(c, d, true) })
+	gp.POST("/:account_id/disable", func(c *gin.Context) { toggleAccount(c, d, false) })
+	gp.POST("/:account_id/test-login", func(c *gin.Context) { testLogin(c, d) })
+	gp.POST("/:account_id/refresh-balance", func(c *gin.Context) { refreshBalance(c, d) })
+	gp.POST("/:account_id/refresh-rates", func(c *gin.Context) { refreshRates(c, d) })
+	gp.POST("/:account_id/redeem", func(c *gin.Context) { redeemAccount(c, d) })
+	gp.GET("/:account_id/recharge-info", func(c *gin.Context) { accountRechargeInfo(c, d) })
+	gp.POST("/:account_id/recharge", func(c *gin.Context) { createAccountRecharge(c, d) })
+	gp.GET("/:account_id/subscription-info", func(c *gin.Context) { accountSubscriptionInfo(c, d) })
+	gp.POST("/:account_id/subscription", func(c *gin.Context) { createAccountSubscription(c, d) })
+	gp.GET("/:account_id/subscription-usage", func(c *gin.Context) { accountSubscriptionUsage(c, d) })
+	gp.GET("/:account_id/api-keys/groups", func(c *gin.Context) { listAccountAPIKeyGroups(c, d) })
+	gp.GET("/:account_id/api-keys", func(c *gin.Context) { listAccountAPIKeys(c, d) })
+	gp.POST("/:account_id/api-keys", func(c *gin.Context) { createAccountAPIKey(c, d) })
+	gp.PUT("/:account_id/api-keys/:key_id", func(c *gin.Context) { updateAccountAPIKey(c, d) })
+	gp.DELETE("/:account_id/api-keys/:key_id", func(c *gin.Context) { deleteAccountAPIKey(c, d) })
+	gp.POST("/:account_id/api-keys/:key_id/reveal", func(c *gin.Context) { revealAccountAPIKey(c, d) })
+	gp.POST("/:account_id/sync", func(c *gin.Context) { syncAccount(c, d) })
+	gp.GET("/:account_id/rates", func(c *gin.Context) { accountRates(c, d) })
+	gp.GET("/:account_id/balance-history", func(c *gin.Context) { balanceHistory(c, d) })
 }
 
-type channelInput struct {
-	Name                   string                 `json:"name" binding:"required"`
-	Type                   storage.ChannelType    `json:"type" binding:"required"`
-	SiteURL                string                 `json:"site_url" binding:"required"`
+type accountInput struct {
+	Alias                  string                 `json:"alias" binding:"required"`
 	Username               string                 `json:"username"`
 	SortOrder              int                    `json:"sort_order"`
 	Password               string                 `json:"password"`
 	CredentialMode         storage.CredentialMode `json:"credential_mode"`
-	TokenCredential        string                 `json:"token_credential"` // JSON：token 模式时填写
+	TokenCredential        string                 `json:"token_credential"`
 	LoginExtraParams       string                 `json:"login_extra_params"`
 	TurnstileEnabled       bool                   `json:"turnstile_enabled"`
-	IgnoreAnnouncements    bool                   `json:"ignore_announcements"`
 	SubscriptionEnabled    bool                   `json:"subscription_enabled"`
 	ProxyEnabled           bool                   `json:"proxy_enabled"`
 	CaptchaConfigID        *uint                  `json:"captcha_config_id"`
 	BalanceThreshold       float64                `json:"balance_threshold"`
 	RechargeMultiplier     *float64               `json:"recharge_multiplier"`
 	RechargeMultiplierMode string                 `json:"recharge_multiplier_mode"`
-	MonitorEnabled         bool                   `json:"monitor_enabled"`
+	MonitorEnabled         *bool                  `json:"monitor_enabled"`
 }
 
-type channelUpdateInput struct {
-	Name                   *string                 `json:"name"`
-	SiteURL                *string                 `json:"site_url"`
+type accountUpdateInput struct {
+	Alias                  *string                 `json:"alias"`
 	Username               *string                 `json:"username"`
 	SortOrder              *int                    `json:"sort_order"`
 	Password               *string                 `json:"password"`
@@ -79,7 +75,6 @@ type channelUpdateInput struct {
 	TokenCredential        *string                 `json:"token_credential"`
 	LoginExtraParams       *string                 `json:"login_extra_params"`
 	TurnstileEnabled       *bool                   `json:"turnstile_enabled"`
-	IgnoreAnnouncements    *bool                   `json:"ignore_announcements"`
 	SubscriptionEnabled    *bool                   `json:"subscription_enabled"`
 	ProxyEnabled           *bool                   `json:"proxy_enabled"`
 	CaptchaConfigID        *uint                   `json:"captcha_config_id"`
@@ -89,38 +84,55 @@ type channelUpdateInput struct {
 	MonitorEnabled         *bool                   `json:"monitor_enabled"`
 }
 
-type channelOutput struct {
-	storage.Channel
+type accountOutput struct {
+	storage.UpstreamAccount
 	UserID string `json:"user_id,omitempty"`
 }
 
-type channelRedeemInput struct {
+type accountRedeemInput struct {
 	Code string `json:"code"`
 }
 
-type channelRechargeInput struct {
+type accountRechargeInput struct {
 	Amount        float64 `json:"amount"`
 	PaymentMethod string  `json:"payment_method"`
 	IsMobile      bool    `json:"is_mobile"`
 }
 
-type channelSubscriptionInput struct {
+type accountSubscriptionInput struct {
 	PlanID        string `json:"plan_id"`
 	PaymentMethod string `json:"payment_method"`
 	IsMobile      bool   `json:"is_mobile"`
 }
 
-type channelAPIKeyCreateInput = connector.APIKeyCreateRequest
-type channelAPIKeyUpdateInput = connector.APIKeyUpdateRequest
+type accountAPIKeyCreateInput = connector.APIKeyCreateRequest
+type accountAPIKeyUpdateInput = connector.APIKeyUpdateRequest
 
-func listChannels(c *gin.Context, d *Deps) {
+var forbiddenAccountFields = []string{"type", "base_url", "site_url", "site_id", "upstream_site_id"}
+
+// bindAccountJSON prevents an account from overriding the connection target
+// owned by its upstream site.
+func bindAccountJSON(c *gin.Context, target any) error {
+	var raw map[string]json.RawMessage
+	if err := c.ShouldBindBodyWith(&raw, binding.JSON); err != nil {
+		return err
+	}
+	for _, field := range forbiddenAccountFields {
+		if _, ok := raw[field]; ok {
+			return fmt.Errorf("账号请求不允许字段 %q", field)
+		}
+	}
+	return c.ShouldBindBodyWith(target, binding.JSON)
+}
+
+func listAccounts(c *gin.Context, d *Deps) {
 	if c.Query("page") != "" || c.Query("page_size") != "" {
-		page, pageSize, err := parseChannelPageQuery(c)
+		page, pageSize, err := parseAccountPageQuery(c)
 		if err != nil {
 			fail(c, http.StatusBadRequest, err)
 			return
 		}
-		list, total, err := d.Channels.ListPage(page, pageSize)
+		list, total, err := d.Accounts.ListPage(page, pageSize)
 		if err != nil {
 			fail(c, http.StatusInternalServerError, err)
 			return
@@ -130,7 +142,7 @@ func listChannels(c *gin.Context, d *Deps) {
 			pages = int((total + int64(pageSize) - 1) / int64(pageSize))
 		}
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{
-			"items":     channelOutputs(d, list),
+			"items":     accountOutputs(d, list),
 			"total":     total,
 			"page":      page,
 			"page_size": pageSize,
@@ -139,69 +151,65 @@ func listChannels(c *gin.Context, d *Deps) {
 		return
 	}
 
-	list, err := d.Channels.List()
+	list, err := d.Accounts.List()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": channelOutputs(d, list)})
+	c.JSON(http.StatusOK, gin.H{"data": accountOutputs(d, list)})
 }
 
-func createChannel(c *gin.Context, d *Deps) {
-	var in channelInput
-	if err := c.ShouldBindJSON(&in); err != nil {
-		fail(c, http.StatusBadRequest, err)
-		return
-	}
-	created, err := d.ChannelSvc.Create(channel.CreateInput{
-		Name:                   in.Name,
-		Type:                   in.Type,
-		SiteURL:                in.SiteURL,
+func createAccountForSite(d *Deps, siteID uint, in accountInput) (*storage.UpstreamAccount, error) {
+	return d.AccountSvc.Create(account.CreateInput{
+		SiteID:                 siteID,
+		Alias:                  in.Alias,
 		Username:               in.Username,
-		SortOrder:              in.SortOrder,
+		AccountSortOrder:       in.SortOrder,
 		Password:               in.Password,
 		CredentialMode:         in.CredentialMode,
 		TokenCredential:        in.TokenCredential,
 		LoginExtraParams:       in.LoginExtraParams,
 		TurnstileEnabled:       in.TurnstileEnabled,
-		IgnoreAnnouncements:    in.IgnoreAnnouncements,
-		SubscriptionEnabled:    in.Type == storage.ChannelTypeSub2API && in.SubscriptionEnabled,
+		SubscriptionEnabled:    in.SubscriptionEnabled,
 		ProxyEnabled:           in.ProxyEnabled,
 		CaptchaConfigID:        in.CaptchaConfigID,
 		BalanceThreshold:       in.BalanceThreshold,
 		RechargeMultiplier:     in.RechargeMultiplier,
 		RechargeMultiplierMode: in.RechargeMultiplierMode,
-		MonitorEnabled:         in.MonitorEnabled,
+		MonitorEnabled:         boolDefaultTrue(in.MonitorEnabled),
 	})
-	if err != nil {
-		fail(c, http.StatusInternalServerError, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"data": channelOutputFor(d, *created)})
 }
 
-func channelOutputs(d *Deps, list []storage.Channel) []channelOutput {
-	out := make([]channelOutput, 0, len(list))
+func boolDefaultTrue(value *bool) bool {
+	return value == nil || *value
+}
+
+func accountOutputs(d *Deps, list []storage.UpstreamAccount) []accountOutput {
+	out := make([]accountOutput, 0, len(list))
 	for _, ch := range list {
-		out = append(out, channelOutputFor(d, ch))
+		out = append(out, accountOutputFor(d, ch))
 	}
 	return out
 }
 
-func channelOutputFor(d *Deps, ch storage.Channel) channelOutput {
-	out := channelOutput{Channel: ch}
-	out.UserID = channelUserID(d, &ch)
+func accountOutputFor(d *Deps, ch storage.UpstreamAccount) accountOutput {
+	out := accountOutput{UpstreamAccount: ch}
+	out.UserID = accountUserID(d, &ch)
 	return out
 }
 
-func channelUserID(d *Deps, ch *storage.Channel) string {
-	if d == nil || ch == nil || ch.Type != storage.ChannelTypeNewAPI {
+func accountUserID(d *Deps, ch *storage.UpstreamAccount) string {
+	if d == nil || d.Sites == nil || ch == nil {
+		return ""
+	}
+	site, err := d.Sites.FindByID(ch.SiteID)
+	if err != nil || site.Type != storage.UpstreamTypeNewAPI {
 		return ""
 	}
 	if ch.CredentialMode == storage.CredentialModeToken && d.Cipher != nil && ch.PasswordCipher != "" {
 		raw, err := d.Cipher.Decrypt(ch.PasswordCipher)
 		if err == nil {
-			var cred channel.NewAPITokenCredential
+			var cred account.NewAPITokenCredential
 			if json.Unmarshal([]byte(raw), &cred) == nil {
 				if userID := strings.TrimSpace(cred.UserID); userID != "" {
 					return userID
@@ -210,7 +218,7 @@ func channelUserID(d *Deps, ch *storage.Channel) string {
 		}
 	}
 	if d.Sessions != nil {
-		session, err := d.Sessions.FindByChannel(ch.ID)
+		session, err := d.Sessions.FindByAccount(ch.ID)
 		if err == nil && session != nil {
 			return strings.TrimSpace(session.UserID)
 		}
@@ -218,53 +226,41 @@ func channelUserID(d *Deps, ch *storage.Channel) string {
 	return ""
 }
 
-func getChannel(c *gin.Context, d *Deps) {
-	id, err := uintParam(c, "id")
+func getAccount(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	ch, err := d.Channels.FindByID(id)
+	ch, err := d.Accounts.FindByID(id)
 	if err != nil {
 		fail(c, http.StatusNotFound, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": channelOutputFor(d, *ch)})
+	c.JSON(http.StatusOK, gin.H{"data": accountOutputFor(d, *ch)})
 }
 
-func updateChannel(c *gin.Context, d *Deps) {
-	id, err := uintParam(c, "id")
+func updateAccount(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	var in channelUpdateInput
-	if err := c.ShouldBindJSON(&in); err != nil {
+	var in accountUpdateInput
+	if err := bindAccountJSON(c, &in); err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	subscriptionEnabled := in.SubscriptionEnabled
-	if subscriptionEnabled != nil {
-		current, err := d.Channels.FindByID(id)
-		if err != nil {
-			fail(c, http.StatusNotFound, err)
-			return
-		}
-		enabled := current.Type == storage.ChannelTypeSub2API && *subscriptionEnabled
-		subscriptionEnabled = &enabled
-	}
-	updated, err := d.ChannelSvc.Update(id, channel.UpdateInput{
-		Name:                   in.Name,
-		SiteURL:                in.SiteURL,
+	updated, err := d.AccountSvc.Update(id, account.UpdateInput{
+		Alias:                  in.Alias,
 		Username:               in.Username,
-		SortOrder:              in.SortOrder,
+		AccountSortOrder:       in.SortOrder,
 		Password:               in.Password,
 		CredentialMode:         in.CredentialMode,
 		TokenCredential:        in.TokenCredential,
 		LoginExtraParams:       in.LoginExtraParams,
 		TurnstileEnabled:       in.TurnstileEnabled,
-		IgnoreAnnouncements:    in.IgnoreAnnouncements,
-		SubscriptionEnabled:    subscriptionEnabled,
+		SubscriptionEnabled:    in.SubscriptionEnabled,
 		ProxyEnabled:           in.ProxyEnabled,
 		CaptchaConfigID:        in.CaptchaConfigID,
 		BalanceThreshold:       in.BalanceThreshold,
@@ -276,43 +272,66 @@ func updateChannel(c *gin.Context, d *Deps) {
 		fail(c, http.StatusInternalServerError, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": channelOutputFor(d, *updated)})
+	c.JSON(http.StatusOK, gin.H{"data": accountOutputFor(d, *updated)})
 }
 
-func deleteChannel(c *gin.Context, d *Deps) {
-	id, err := uintParam(c, "id")
+func deleteAccount(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	if err := d.ChannelSvc.Delete(id); err != nil {
-		fail(c, http.StatusInternalServerError, err)
+	replacementID, parseErr := optionalUintQuery(c, "replacement_account_id")
+	if parseErr != nil {
+		fail(c, http.StatusBadRequest, parseErr)
+		return
+	}
+	var deleteErr error
+	if d.Sites != nil {
+		deleteErr = d.Sites.DeleteAccount(id, replacementID)
+	} else {
+		deleteErr = d.AccountSvc.Delete(id)
+	}
+	if deleteErr != nil {
+		fail(c, http.StatusBadRequest, deleteErr)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-func clearChannelLoginInfo(c *gin.Context, d *Deps) {
-	id, err := uintParam(c, "id")
+func optionalUintQuery(c *gin.Context, name string) (uint, error) {
+	raw := strings.TrimSpace(c.Query(name))
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || value == 0 {
+		return 0, fmt.Errorf("%s 必须是正整数", name)
+	}
+	return uint(value), nil
+}
+
+func clearAccountLoginInfo(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	updated, err := d.ChannelSvc.ClearLoginInfo(id)
+	updated, err := d.AccountSvc.ClearLoginInfo(id)
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true, "data": channelOutputFor(d, *updated)})
+	c.JSON(http.StatusOK, gin.H{"ok": true, "data": accountOutputFor(d, *updated)})
 }
 
-func toggleChannel(c *gin.Context, d *Deps, enabled bool) {
-	id, err := uintParam(c, "id")
+func toggleAccount(c *gin.Context, d *Deps, enabled bool) {
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	_, err = d.ChannelSvc.Update(id, channel.UpdateInput{MonitorEnabled: &enabled})
+	_, err = d.AccountSvc.Update(id, account.UpdateInput{MonitorEnabled: &enabled})
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err)
 		return
@@ -321,27 +340,27 @@ func toggleChannel(c *gin.Context, d *Deps, enabled bool) {
 }
 
 func testLogin(c *gin.Context, d *Deps) {
-	id, err := uintParam(c, "id")
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	ch, err := d.Channels.FindByID(id)
+	ch, err := d.Accounts.FindByID(id)
 	if err != nil {
 		fail(c, http.StatusNotFound, err)
 		return
 	}
 
 	obs := setupSSE(c)
-	ctx := progress.WithObserver(c.Request.Context(), channelScopedObserver{
-		base:        obs,
-		channelID:   ch.ID,
-		channelName: ch.Name,
-		index:       1,
-		total:       1,
+	ctx := progress.WithObserver(c.Request.Context(), accountScopedObserver{
+		base:         obs,
+		accountID:    ch.ID,
+		accountAlias: ch.Alias,
+		index:        1,
+		total:        1,
 	})
 
-	if err := d.ChannelSvc.TestLogin(ctx, id); err != nil {
+	if err := d.AccountSvc.TestLogin(ctx, id); err != nil {
 		progress.Fail(ctx, progress.StageError, err.Error())
 		return
 	}
@@ -349,12 +368,12 @@ func testLogin(c *gin.Context, d *Deps) {
 }
 
 func refreshBalance(c *gin.Context, d *Deps) {
-	id, err := uintParam(c, "id")
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	ch, err := d.Channels.FindByID(id)
+	ch, err := d.Accounts.FindByID(id)
 	if err != nil {
 		fail(c, http.StatusNotFound, err)
 		return
@@ -367,12 +386,12 @@ func refreshBalance(c *gin.Context, d *Deps) {
 }
 
 func refreshRates(c *gin.Context, d *Deps) {
-	id, err := uintParam(c, "id")
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	ch, err := d.Channels.FindByID(id)
+	ch, err := d.Accounts.FindByID(id)
 	if err != nil {
 		fail(c, http.StatusNotFound, err)
 		return
@@ -384,23 +403,23 @@ func refreshRates(c *gin.Context, d *Deps) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-func redeemChannel(c *gin.Context, d *Deps) {
-	id, err := uintParam(c, "id")
+func redeemAccount(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	if _, err := d.Channels.FindByID(id); err != nil {
+	if _, err := d.Accounts.FindByID(id); err != nil {
 		fail(c, http.StatusNotFound, err)
 		return
 	}
 
-	var in channelRedeemInput
+	var in accountRedeemInput
 	if err := c.ShouldBindJSON(&in); err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	res, err := d.ChannelSvc.RedeemCode(c.Request.Context(), id, in.Code)
+	res, err := d.AccountSvc.RedeemCode(c.Request.Context(), id, in.Code)
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
@@ -408,13 +427,13 @@ func redeemChannel(c *gin.Context, d *Deps) {
 	c.JSON(http.StatusOK, gin.H{"data": res})
 }
 
-func channelRechargeInfo(c *gin.Context, d *Deps) {
-	id, err := uintParam(c, "id")
+func accountRechargeInfo(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	info, err := d.ChannelSvc.GetRechargeInfo(c.Request.Context(), id)
+	info, err := d.AccountSvc.GetRechargeInfo(c.Request.Context(), id)
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
@@ -422,13 +441,13 @@ func channelRechargeInfo(c *gin.Context, d *Deps) {
 	c.JSON(http.StatusOK, gin.H{"data": info})
 }
 
-func createChannelRecharge(c *gin.Context, d *Deps) {
-	id, err := uintParam(c, "id")
+func createAccountRecharge(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	var in channelRechargeInput
+	var in accountRechargeInput
 	if err := c.ShouldBindJSON(&in); err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
@@ -441,7 +460,7 @@ func createChannelRecharge(c *gin.Context, d *Deps) {
 		fail(c, http.StatusBadRequest, fmt.Errorf("仅支持 alipay 或 wxpay"))
 		return
 	}
-	res, err := d.ChannelSvc.CreateRecharge(c.Request.Context(), id, connector.RechargeRequest{
+	res, err := d.AccountSvc.CreateRecharge(c.Request.Context(), id, connector.RechargeRequest{
 		Amount:        in.Amount,
 		PaymentMethod: in.PaymentMethod,
 		IsMobile:      in.IsMobile,
@@ -453,13 +472,13 @@ func createChannelRecharge(c *gin.Context, d *Deps) {
 	c.JSON(http.StatusOK, gin.H{"data": res})
 }
 
-func channelSubscriptionInfo(c *gin.Context, d *Deps) {
-	id, err := uintParam(c, "id")
+func accountSubscriptionInfo(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	info, err := d.ChannelSvc.GetSubscriptionInfo(c.Request.Context(), id)
+	info, err := d.AccountSvc.GetSubscriptionInfo(c.Request.Context(), id)
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
@@ -467,13 +486,13 @@ func channelSubscriptionInfo(c *gin.Context, d *Deps) {
 	c.JSON(http.StatusOK, gin.H{"data": info})
 }
 
-func createChannelSubscription(c *gin.Context, d *Deps) {
-	id, err := uintParam(c, "id")
+func createAccountSubscription(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	var in channelSubscriptionInput
+	var in accountSubscriptionInput
 	if err := c.ShouldBindJSON(&in); err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
@@ -486,7 +505,7 @@ func createChannelSubscription(c *gin.Context, d *Deps) {
 		fail(c, http.StatusBadRequest, fmt.Errorf("请选择支付方式"))
 		return
 	}
-	res, err := d.ChannelSvc.CreateSubscription(c.Request.Context(), id, connector.SubscriptionRequest{
+	res, err := d.AccountSvc.CreateSubscription(c.Request.Context(), id, connector.SubscriptionRequest{
 		PlanID:        in.PlanID,
 		PaymentMethod: in.PaymentMethod,
 		IsMobile:      in.IsMobile,
@@ -498,13 +517,13 @@ func createChannelSubscription(c *gin.Context, d *Deps) {
 	c.JSON(http.StatusOK, gin.H{"data": res})
 }
 
-func channelSubscriptionUsage(c *gin.Context, d *Deps) {
-	id, err := uintParam(c, "id")
+func accountSubscriptionUsage(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	info, err := d.ChannelSvc.GetSubscriptionUsage(c.Request.Context(), id)
+	info, err := d.AccountSvc.GetSubscriptionUsage(c.Request.Context(), id)
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
@@ -512,8 +531,8 @@ func channelSubscriptionUsage(c *gin.Context, d *Deps) {
 	c.JSON(http.StatusOK, gin.H{"data": info})
 }
 
-func listChannelAPIKeys(c *gin.Context, d *Deps) {
-	id, err := uintParam(c, "id")
+func listAccountAPIKeys(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
@@ -523,7 +542,7 @@ func listChannelAPIKeys(c *gin.Context, d *Deps) {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	res, err := d.ChannelSvc.ListAPIKeys(c.Request.Context(), id, connector.APIKeyQuery{
+	res, err := d.AccountSvc.ListAPIKeys(c.Request.Context(), id, connector.APIKeyQuery{
 		Page:     page,
 		PageSize: pageSize,
 		Search:   c.Query("search"),
@@ -537,13 +556,13 @@ func listChannelAPIKeys(c *gin.Context, d *Deps) {
 	c.JSON(http.StatusOK, gin.H{"data": res})
 }
 
-func listChannelAPIKeyGroups(c *gin.Context, d *Deps) {
-	id, err := uintParam(c, "id")
+func listAccountAPIKeyGroups(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	res, err := d.ChannelSvc.ListAPIKeyGroups(c.Request.Context(), id)
+	res, err := d.AccountSvc.ListAPIKeyGroups(c.Request.Context(), id)
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
@@ -551,13 +570,13 @@ func listChannelAPIKeyGroups(c *gin.Context, d *Deps) {
 	c.JSON(http.StatusOK, gin.H{"data": res})
 }
 
-func createChannelAPIKey(c *gin.Context, d *Deps) {
-	id, err := uintParam(c, "id")
+func createAccountAPIKey(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	var in channelAPIKeyCreateInput
+	var in accountAPIKeyCreateInput
 	if err := c.ShouldBindJSON(&in); err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
@@ -566,7 +585,7 @@ func createChannelAPIKey(c *gin.Context, d *Deps) {
 		fail(c, http.StatusBadRequest, fmt.Errorf("密钥名称不能为空"))
 		return
 	}
-	res, err := d.ChannelSvc.CreateAPIKey(c.Request.Context(), id, connector.APIKeyCreateRequest(in))
+	res, err := d.AccountSvc.CreateAPIKey(c.Request.Context(), id, connector.APIKeyCreateRequest(in))
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
@@ -574,8 +593,8 @@ func createChannelAPIKey(c *gin.Context, d *Deps) {
 	c.JSON(http.StatusOK, gin.H{"data": res})
 }
 
-func updateChannelAPIKey(c *gin.Context, d *Deps) {
-	id, err := uintParam(c, "id")
+func updateAccountAPIKey(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
@@ -585,12 +604,12 @@ func updateChannelAPIKey(c *gin.Context, d *Deps) {
 		fail(c, http.StatusBadRequest, fmt.Errorf("密钥 ID 无效"))
 		return
 	}
-	var in channelAPIKeyUpdateInput
+	var in accountAPIKeyUpdateInput
 	if err := c.ShouldBindJSON(&in); err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	res, err := d.ChannelSvc.UpdateAPIKey(c.Request.Context(), id, keyID, connector.APIKeyUpdateRequest(in))
+	res, err := d.AccountSvc.UpdateAPIKey(c.Request.Context(), id, keyID, connector.APIKeyUpdateRequest(in))
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
@@ -598,8 +617,8 @@ func updateChannelAPIKey(c *gin.Context, d *Deps) {
 	c.JSON(http.StatusOK, gin.H{"data": res})
 }
 
-func deleteChannelAPIKey(c *gin.Context, d *Deps) {
-	id, err := uintParam(c, "id")
+func deleteAccountAPIKey(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
@@ -609,15 +628,15 @@ func deleteChannelAPIKey(c *gin.Context, d *Deps) {
 		fail(c, http.StatusBadRequest, fmt.Errorf("密钥 ID 无效"))
 		return
 	}
-	if err := d.ChannelSvc.DeleteAPIKey(c.Request.Context(), id, keyID); err != nil {
+	if err := d.AccountSvc.DeleteAPIKey(c.Request.Context(), id, keyID); err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-func revealChannelAPIKey(c *gin.Context, d *Deps) {
-	id, err := uintParam(c, "id")
+func revealAccountAPIKey(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
@@ -627,7 +646,7 @@ func revealChannelAPIKey(c *gin.Context, d *Deps) {
 		fail(c, http.StatusBadRequest, fmt.Errorf("密钥 ID 无效"))
 		return
 	}
-	key, err := d.ChannelSvc.RevealAPIKey(c.Request.Context(), id, keyID)
+	key, err := d.AccountSvc.RevealAPIKey(c.Request.Context(), id, keyID)
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
@@ -635,13 +654,13 @@ func revealChannelAPIKey(c *gin.Context, d *Deps) {
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"key": key}})
 }
 
-func channelRates(c *gin.Context, d *Deps) {
-	id, err := uintParam(c, "id")
+func accountRates(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	list, err := d.Rates.ListByChannel(id)
+	list, err := d.Rates.ListByAccount(id)
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err)
 		return
@@ -650,7 +669,7 @@ func channelRates(c *gin.Context, d *Deps) {
 }
 
 func balanceHistory(c *gin.Context, d *Deps) {
-	id, err := uintParam(c, "id")
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
@@ -688,7 +707,7 @@ func parsePageQuery(c *gin.Context) (int, int, error) {
 	return page, pageSize, nil
 }
 
-func parseChannelPageQuery(c *gin.Context) (int, int, error) {
+func parseAccountPageQuery(c *gin.Context) (int, int, error) {
 	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
 	if err != nil || page < 1 {
 		return 0, 0, fmt.Errorf("page 必须是正整数")
@@ -703,7 +722,7 @@ func parseChannelPageQuery(c *gin.Context) (int, int, error) {
 	return page, pageSize, nil
 }
 
-// setupSSE 给 ResponseWriter 设上 text/event-stream 头，返回一个就绪的 sseObserver。
+// setupSSE 为 ResponseWriter 设置 text/event-stream 头，并返回一个就绪的 sseObserver。
 // 调用方接下来一般是：
 //
 //	obs := setupSSE(c)
@@ -724,9 +743,7 @@ func setupSSE(c *gin.Context) *sseObserver {
 	return obs
 }
 
-// sseObserver 把 progress.Event 序列化成 SSE 格式写入 ResponseWriter。
-// 因为 gin 的 Handler 在一个 goroutine 中跑，而 emit 可能从下游同步 / 异步发起，
-// 这里加锁保证 writer 串行写。
+// sseObserver serializes progress events as SSE records.
 type sseObserver struct {
 	mu     sync.Mutex
 	w      io.Writer
@@ -762,51 +779,44 @@ func (o *sseObserver) Emit(ev progress.Event) {
 	}
 }
 
-type channelScopedObserver struct {
-	base        progress.Observer
-	channelID   uint
-	channelName string
-	index       int
-	total       int
+type accountScopedObserver struct {
+	base         progress.Observer
+	accountID    uint
+	accountAlias string
+	index        int
+	total        int
 }
 
-func (o channelScopedObserver) Emit(ev progress.Event) {
-	ev.ChannelID = o.channelID
-	ev.ChannelName = o.channelName
+func (o accountScopedObserver) Emit(ev progress.Event) {
+	ev.AccountID = o.accountID
+	ev.AccountAlias = o.accountAlias
 	ev.Index = o.index
 	ev.Total = o.total
 	o.base.Emit(ev)
 }
 
-// syncChannel 通过 SSE 把整个同步过程的子步骤实时推给前端。
-//
-//	GET / POST /api/channels/:id/sync
-//	响应 Content-Type: text/event-stream，每条事件形如
-//	  data: {"stage":"login","message":"登录上游…","time":"..."}
-//
-// 前端用 fetch + ReadableStream 读取，按 "\n\n" 切片解析。
-func syncChannel(c *gin.Context, d *Deps) {
-	id, err := uintParam(c, "id")
+// syncAccount streams one account's refresh progress.
+func syncAccount(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "account_id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	ch, err := d.Channels.FindByID(id)
+	ch, err := d.Accounts.FindByID(id)
 	if err != nil {
 		fail(c, http.StatusNotFound, err)
 		return
 	}
 
 	obs := setupSSE(c)
-	ctx := progress.WithObserver(c.Request.Context(), channelScopedObserver{
-		base:        obs,
-		channelID:   ch.ID,
-		channelName: ch.Name,
-		index:       1,
-		total:       1,
+	ctx := progress.WithObserver(c.Request.Context(), accountScopedObserver{
+		base:         obs,
+		accountID:    ch.ID,
+		accountAlias: ch.Alias,
+		index:        1,
+		total:        1,
 	})
 
-	// 串行执行：先余额，再订阅告警，再倍率。任一步失败仍尝试下一个，但用 done 表示整体状态。
 	balErr := d.Monitor.RefreshBalance(ctx, ch)
 	var subErr error
 	if balErr == nil {
@@ -822,8 +832,8 @@ func syncChannel(c *gin.Context, d *Deps) {
 	}
 }
 
-func syncAllChannels(c *gin.Context, d *Deps) {
-	list, err := d.Channels.List()
+func syncAllAccounts(c *gin.Context, d *Deps) {
+	list, err := d.Accounts.List()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err)
 		return
@@ -845,12 +855,12 @@ func syncAllChannels(c *gin.Context, d *Deps) {
 
 	for i := range list {
 		ch := list[i]
-		scoped := channelScopedObserver{
-			base:        obs,
-			channelID:   ch.ID,
-			channelName: ch.Name,
-			index:       i + 1,
-			total:       total,
+		scoped := accountScopedObserver{
+			base:         obs,
+			accountID:    ch.ID,
+			accountAlias: ch.Alias,
+			index:        i + 1,
+			total:        total,
 		}
 		ctx := progress.WithObserver(baseCtx, scoped)
 
@@ -858,7 +868,7 @@ func syncAllChannels(c *gin.Context, d *Deps) {
 			failedCount++
 			scoped.Emit(progress.Event{
 				Stage:   progress.StageError,
-				Message: fmt.Sprintf("同步失败：%v", err),
+				Message: fmt.Sprintf("同步失败: %v", err),
 				Time:    time.Now(),
 			})
 			continue
@@ -867,7 +877,7 @@ func syncAllChannels(c *gin.Context, d *Deps) {
 			failedCount++
 			scoped.Emit(progress.Event{
 				Stage:   progress.StageError,
-				Message: fmt.Sprintf("订阅检查失败：%v", err),
+				Message: fmt.Sprintf("订阅检查失败: %v", err),
 				Time:    time.Now(),
 			})
 			continue
@@ -881,7 +891,7 @@ func syncAllChannels(c *gin.Context, d *Deps) {
 		})
 	}
 
-	summary := fmt.Sprintf("批量同步完成：成功 %d，失败 %d", successCount, failedCount)
+	summary := fmt.Sprintf("批量同步完成: 成功 %d，失败 %d", successCount, failedCount)
 	stage := progress.StageDone
 	if failedCount > 0 {
 		stage = progress.StageError

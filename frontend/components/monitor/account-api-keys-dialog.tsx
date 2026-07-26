@@ -34,21 +34,23 @@ import {
 } from "@/components/ui/table"
 import { useConfirm } from "@/components/ui/confirm-dialog"
 import { apiFetch } from "@/lib/api"
-import { channelTypeLabel, dateTime, decimal, formatRatio } from "@/lib/format"
+import { dateTime, decimal, formatRatio } from "@/lib/format"
 import type {
-  Channel,
-  ChannelAPIKey,
-  ChannelAPIKeyGroup,
-  ChannelAPIKeyPage,
-  ChannelAPIKeyReveal,
-  ChannelAPIKeyStatus,
+  AccountAPIKey,
+  AccountAPIKeyGroup,
+  AccountAPIKeyPage,
+  AccountAPIKeyReveal,
+  AccountAPIKeyStatus,
+  UpstreamAccount,
+  UpstreamSite,
 } from "@/lib/api-types"
 import { cn } from "@/lib/utils"
 
-interface ChannelAPIKeysDialogProps {
+interface AccountAPIKeysDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  channel: Channel | null
+  account: UpstreamAccount | null
+  site: UpstreamSite | null
 }
 
 type Mode = "list" | "create" | "edit"
@@ -105,11 +107,11 @@ const emptyForm: KeyForm = {
   reset_rate_limit_usage: false,
 }
 
-function formFromKey(key: ChannelAPIKey, channel: Channel): KeyForm {
+function formFromKey(key: AccountAPIKey, site: UpstreamSite): KeyForm {
   const base = { ...emptyForm }
   base.name = key.name ?? ""
   base.status = key.status === "disabled" ? "disabled" : "active"
-  if (channel.type === "newapi") {
+  if (site.type === "newapi") {
     base.group = key.group ?? ""
     base.remain_quota = key.quota ? String(key.quota) : "0"
     base.unlimited_quota = !!key.unlimited_quota
@@ -131,7 +133,7 @@ function formFromKey(key: ChannelAPIKey, channel: Channel): KeyForm {
   return base
 }
 
-function groupDisplayName(key: ChannelAPIKey) {
+function groupDisplayName(key: AccountAPIKey) {
   return key.group_name || key.group || (key.group_id != null ? `#${key.group_id}` : "—")
 }
 
@@ -234,21 +236,22 @@ async function copyText(text: string, label = "已复制") {
   toast.success(label)
 }
 
-export function ChannelAPIKeysDialog({
+export function AccountAPIKeysDialog({
   open,
   onOpenChange,
-  channel,
-}: ChannelAPIKeysDialogProps) {
+  account,
+  site,
+}: AccountAPIKeysDialogProps) {
   const { confirm, dialog: confirmDialog } = useConfirm()
   const [mode, setMode] = useState<Mode>("list")
-  const [editing, setEditing] = useState<ChannelAPIKey | null>(null)
+  const [editing, setEditing] = useState<AccountAPIKey | null>(null)
   const [form, setForm] = useState<KeyForm>(emptyForm)
   const [page, setPage] = useState(1)
   const [reloadTick, setReloadTick] = useState(0)
   const [search, setSearch] = useState("")
-  const [status, setStatus] = useState<ChannelAPIKeyStatus | "all">("all")
-  const [data, setData] = useState<ChannelAPIKeyPage | null>(null)
-  const [groups, setGroups] = useState<ChannelAPIKeyGroup[]>([])
+  const [status, setStatus] = useState<AccountAPIKeyStatus | "all">("all")
+  const [data, setData] = useState<AccountAPIKeyPage | null>(null)
+  const [groups, setGroups] = useState<AccountAPIKeyGroup[]>([])
   const [groupsLoading, setGroupsLoading] = useState(false)
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -258,7 +261,7 @@ export function ChannelAPIKeysDialog({
 
   const items = data?.items ?? []
   const totalPages = Math.max(1, data?.pages ?? 1)
-  const isNewAPI = channel?.type === "newapi"
+  const isNewAPI = site?.type === "newapi"
   const groupByName = new Map(groups.map((g) => [g.name, g]))
   const groupByID = new Map(groups.filter((g) => g.id != null).map((g) => [String(g.id), g]))
 
@@ -273,13 +276,13 @@ export function ChannelAPIKeysDialog({
     setError(null)
     setRevealingID(null)
     setRevealedKeys({})
-  }, [open, channel?.id])
+  }, [open, account?.id])
 
   useEffect(() => {
-    if (!open || !channel) return
+    if (!open || !account) return
     let cancelled = false
     setGroupsLoading(true)
-    apiFetch<ChannelAPIKeyGroup[]>(`/channels/${channel.id}/api-keys/groups`)
+    apiFetch<AccountAPIKeyGroup[]>(`/accounts/${account.id}/api-keys/groups`)
       .then((res) => {
         if (cancelled) return
         setGroups(Array.isArray(res) ? res : [])
@@ -296,10 +299,10 @@ export function ChannelAPIKeysDialog({
     return () => {
       cancelled = true
     }
-  }, [open, channel])
+  }, [open, account])
 
   useEffect(() => {
-    if (!open || !channel || mode !== "list") return
+    if (!open || !account || mode !== "list") return
     let cancelled = false
     const params = new URLSearchParams({
       page: String(page),
@@ -309,7 +312,7 @@ export function ChannelAPIKeysDialog({
     if (status !== "all") params.set("status", status)
     setLoading(true)
     setError(null)
-    apiFetch<ChannelAPIKeyPage>(`/channels/${channel.id}/api-keys?${params.toString()}`)
+    apiFetch<AccountAPIKeyPage>(`/accounts/${account.id}/api-keys?${params.toString()}`)
       .then((res) => {
         if (cancelled) return
         setData({
@@ -331,7 +334,7 @@ export function ChannelAPIKeysDialog({
     return () => {
       cancelled = true
     }
-  }, [open, channel, mode, page, search, status, reloadTick])
+  }, [open, account, mode, page, search, status, reloadTick])
 
   function reload() {
     setReloadTick((tick) => tick + 1)
@@ -343,7 +346,7 @@ export function ChannelAPIKeysDialog({
       const next = { ...emptyForm }
       const first = groups[0]
       if (first) {
-        if (channel?.type === "newapi") next.group = first.name
+        if (site?.type === "newapi") next.group = first.name
         else if (first.id != null) next.group_id = String(first.id)
       }
       return next
@@ -352,18 +355,18 @@ export function ChannelAPIKeysDialog({
     setMode("create")
   }
 
-  function openEdit(key: ChannelAPIKey) {
-    if (!channel) return
+  function openEdit(key: AccountAPIKey) {
+    if (!site) return
     setEditing(key)
-    setForm(formFromKey(key, channel))
+    setForm(formFromKey(key, site))
     setError(null)
     setMode("edit")
   }
 
   function buildPayload() {
-    if (!channel) return {}
+    if (!account || !site) return {}
     if (!form.name.trim()) throw new Error("密钥名称不能为空")
-    if (channel.type === "newapi") {
+    if (site.type === "newapi") {
       const payload: Record<string, unknown> = {
         name: form.name.trim(),
         group: form.group.trim(),
@@ -404,13 +407,13 @@ export function ChannelAPIKeysDialog({
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
-    if (!channel) return
+    if (!account) return
     setSubmitting(true)
     setError(null)
     try {
       const payload = buildPayload()
       if (mode === "create") {
-        const created = await apiFetch<ChannelAPIKey>(`/channels/${channel.id}/api-keys`, {
+        const created = await apiFetch<AccountAPIKey>(`/accounts/${account.id}/api-keys`, {
           method: "POST",
           body: JSON.stringify(payload),
         })
@@ -421,7 +424,7 @@ export function ChannelAPIKeysDialog({
           void copyText(created.key, "密钥已创建并复制")
         }
       } else if (editing) {
-        await apiFetch<ChannelAPIKey>(`/channels/${channel.id}/api-keys/${editing.id}`, {
+        await apiFetch<AccountAPIKey>(`/accounts/${account.id}/api-keys/${editing.id}`, {
           method: "PUT",
           body: JSON.stringify(payload),
         })
@@ -440,13 +443,13 @@ export function ChannelAPIKeysDialog({
     }
   }
 
-  async function revealKey(key: ChannelAPIKey) {
-    if (!channel) throw new Error("渠道不存在")
+  async function revealKey(key: AccountAPIKey) {
+    if (!account) throw new Error("账号不存在")
     const cached = revealedKeys[key.id]
     if (cached) return cached
     setRevealingID(key.id)
     try {
-      const res = await apiFetch<ChannelAPIKeyReveal>(`/channels/${channel.id}/api-keys/${key.id}/reveal`, {
+      const res = await apiFetch<AccountAPIKeyReveal>(`/accounts/${account.id}/api-keys/${key.id}/reveal`, {
         method: "POST",
       })
       if (!res?.key) throw new Error("上游未返回完整密钥")
@@ -457,7 +460,7 @@ export function ChannelAPIKeysDialog({
     }
   }
 
-  async function revealAndShow(key: ChannelAPIKey) {
+  async function revealAndShow(key: AccountAPIKey) {
     try {
       await revealKey(key)
     } catch (e) {
@@ -466,7 +469,7 @@ export function ChannelAPIKeysDialog({
     }
   }
 
-  async function revealAndCopy(key: ChannelAPIKey) {
+  async function revealAndCopy(key: AccountAPIKey) {
     try {
       const fullKey = await revealKey(key)
       await copyText(fullKey)
@@ -476,8 +479,8 @@ export function ChannelAPIKeysDialog({
     }
   }
 
-  async function deleteKey(key: ChannelAPIKey) {
-    if (!channel) return
+  async function deleteKey(key: AccountAPIKey) {
+    if (!account) return
     const ok = await confirm({
       title: `删除密钥 ${key.name || key.id}？`,
       description: "删除后该上游密钥将不可恢复。",
@@ -486,7 +489,7 @@ export function ChannelAPIKeysDialog({
     })
     if (!ok) return
     try {
-      await apiFetch(`/channels/${channel.id}/api-keys/${key.id}`, { method: "DELETE" })
+      await apiFetch(`/accounts/${account.id}/api-keys/${key.id}`, { method: "DELETE" })
       toast.success("密钥已删除")
       reload()
     } catch (e) {
@@ -495,8 +498,8 @@ export function ChannelAPIKeysDialog({
     }
   }
 
-  const description = channel
-    ? `${channel.name} · ${channelTypeLabel(channel.type)}`
+  const description = account
+    ? `${account.alias}${site ? ` · ${site.name}` : ""}`
     : "管理上游 API 密钥。"
 
   return (
@@ -527,7 +530,7 @@ export function ChannelAPIKeysDialog({
                   <Select
                     value={status}
                     onValueChange={(value) => {
-                      setStatus(value as ChannelAPIKeyStatus | "all")
+                      setStatus(value as AccountAPIKeyStatus | "all")
                       setPage(1)
                     }}
                   >
@@ -813,9 +816,9 @@ function NewAPIFields({
   form: KeyForm
   setForm: React.Dispatch<React.SetStateAction<KeyForm>>
   disabled: boolean
-  groups: ChannelAPIKeyGroup[]
+  groups: AccountAPIKeyGroup[]
   groupsLoading: boolean
-  selectedGroup?: ChannelAPIKeyGroup
+  selectedGroup?: AccountAPIKeyGroup
 }) {
   return (
     <div className="space-y-4">
@@ -885,9 +888,9 @@ function Sub2APIFields({
   setForm: React.Dispatch<React.SetStateAction<KeyForm>>
   disabled: boolean
   mode: Mode
-  groups: ChannelAPIKeyGroup[]
+  groups: AccountAPIKeyGroup[]
   groupsLoading: boolean
-  selectedGroup?: ChannelAPIKeyGroup
+  selectedGroup?: AccountAPIKeyGroup
 }) {
   return (
     <div className="space-y-4">
@@ -964,7 +967,7 @@ function Sub2APIFields({
   )
 }
 
-function GroupHint({ group }: { group?: ChannelAPIKeyGroup }) {
+function GroupHint({ group }: { group?: AccountAPIKeyGroup }) {
   if (!group) return null
   return (
     <p className="whitespace-normal break-words text-[11px] leading-4 text-muted-foreground">

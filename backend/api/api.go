@@ -10,7 +10,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/bejix/upstream-ops/backend/channel"
+	"github.com/bejix/upstream-ops/backend/account"
+	"github.com/bejix/upstream-ops/backend/accountbundle"
 	"github.com/bejix/upstream-ops/backend/connector"
 	"github.com/bejix/upstream-ops/backend/crypto"
 	"github.com/bejix/upstream-ops/backend/notify"
@@ -22,48 +23,56 @@ import (
 )
 
 type monitorService interface {
-	RefreshBalance(ctx context.Context, c *storage.Channel) error
-	RefreshRates(ctx context.Context, c *storage.Channel) error
-	CheckSubscriptionUsageAlerts(ctx context.Context, c *storage.Channel) error
+	RefreshBalance(ctx context.Context, account *storage.UpstreamAccount) error
+	RefreshRates(ctx context.Context, account *storage.UpstreamAccount) error
+	CheckSubscriptionUsageAlerts(ctx context.Context, account *storage.UpstreamAccount) error
 }
 
-type channelService interface {
-	Create(in channel.CreateInput) (*storage.Channel, error)
-	Update(id uint, in channel.UpdateInput) (*storage.Channel, error)
+type accountService interface {
+	Create(in account.CreateInput) (*storage.UpstreamAccount, error)
+	Update(id uint, in account.UpdateInput) (*storage.UpstreamAccount, error)
 	Delete(id uint) error
-	ClearLoginInfo(id uint) (*storage.Channel, error)
-	TestLogin(ctx context.Context, channelID uint) error
-	RedeemCode(ctx context.Context, channelID uint, code string) (*connector.RedeemResult, error)
-	GetRechargeInfo(ctx context.Context, channelID uint) (*connector.RechargeInfo, error)
-	CreateRecharge(ctx context.Context, channelID uint, req connector.RechargeRequest) (*connector.RechargeLaunch, error)
-	GetSubscriptionInfo(ctx context.Context, channelID uint) (*connector.SubscriptionInfo, error)
-	CreateSubscription(ctx context.Context, channelID uint, req connector.SubscriptionRequest) (*connector.SubscriptionLaunch, error)
-	GetSubscriptionUsage(ctx context.Context, channelID uint) (*connector.SubscriptionUsageInfo, error)
-	ListAPIKeys(ctx context.Context, channelID uint, query connector.APIKeyQuery) (*connector.APIKeyPage, error)
-	ListAPIKeyGroups(ctx context.Context, channelID uint) ([]connector.APIKeyGroup, error)
-	CreateAPIKey(ctx context.Context, channelID uint, req connector.APIKeyCreateRequest) (*connector.APIKey, error)
-	UpdateAPIKey(ctx context.Context, channelID uint, keyID int64, req connector.APIKeyUpdateRequest) (*connector.APIKey, error)
-	DeleteAPIKey(ctx context.Context, channelID uint, keyID int64) error
-	RevealAPIKey(ctx context.Context, channelID uint, keyID int64) (string, error)
+	ClearLoginInfo(id uint) (*storage.UpstreamAccount, error)
+	TestLogin(ctx context.Context, accountID uint) error
+	RedeemCode(ctx context.Context, accountID uint, code string) (*connector.RedeemResult, error)
+	GetRechargeInfo(ctx context.Context, accountID uint) (*connector.RechargeInfo, error)
+	CreateRecharge(ctx context.Context, accountID uint, req connector.RechargeRequest) (*connector.RechargeLaunch, error)
+	GetSubscriptionInfo(ctx context.Context, accountID uint) (*connector.SubscriptionInfo, error)
+	CreateSubscription(ctx context.Context, accountID uint, req connector.SubscriptionRequest) (*connector.SubscriptionLaunch, error)
+	GetSubscriptionUsage(ctx context.Context, accountID uint) (*connector.SubscriptionUsageInfo, error)
+	ListAPIKeys(ctx context.Context, accountID uint, query connector.APIKeyQuery) (*connector.APIKeyPage, error)
+	ListAPIKeyGroups(ctx context.Context, accountID uint) ([]connector.APIKeyGroup, error)
+	CreateAPIKey(ctx context.Context, accountID uint, req connector.APIKeyCreateRequest) (*connector.APIKey, error)
+	UpdateAPIKey(ctx context.Context, accountID uint, keyID int64, req connector.APIKeyUpdateRequest) (*connector.APIKey, error)
+	DeleteAPIKey(ctx context.Context, accountID uint, keyID int64) error
+	RevealAPIKey(ctx context.Context, accountID uint, keyID int64) (string, error)
+}
+
+type siteAccountBundleService interface {
+	Export(ctx context.Context, options accountbundle.ExportOptions) ([]byte, error)
+	Preview(ctx context.Context, data []byte, options accountbundle.ImportOptions) (*accountbundle.ImportPlan, error)
+	Import(ctx context.Context, data []byte, options accountbundle.ImportOptions, expectedDigest string) (*accountbundle.ImportResult, error)
 }
 
 // Deps 把所有 handler 需要的依赖打包传入。
 type Deps struct {
-	DB            *gorm.DB
-	Cipher        *crypto.Cipher
-	Runtime       *runtimeconfig.Manager
-	Channels      *storage.Channels
-	Sessions      *storage.AuthSessions
-	Captchas      *storage.Captchas
-	Notifies      *storage.Notifications
-	Announcements *storage.UpstreamAnnouncements
-	Rates         *storage.Rates
-	MonLogs       *storage.MonitorLogs
-	ChannelSvc    channelService
-	Monitor       monitorService
-	Dispatcher    *notify.Dispatcher
-	UpstreamSync  *syncer.Service
-	Log           *slog.Logger
+	DB             *gorm.DB
+	Cipher         *crypto.Cipher
+	Runtime        *runtimeconfig.Manager
+	Accounts       *storage.UpstreamAccounts
+	Sites          *storage.UpstreamSites
+	Sessions       *storage.AuthSessions
+	Captchas       *storage.Captchas
+	Notifies       *storage.Notifications
+	Announcements  *storage.UpstreamAnnouncements
+	Rates          *storage.Rates
+	MonLogs        *storage.MonitorLogs
+	AccountSvc     accountService
+	AccountBundles siteAccountBundleService
+	Monitor        monitorService
+	Dispatcher     *notify.Dispatcher
+	UpstreamSync   *syncer.Service
+	Log            *slog.Logger
 
 	// Frontend 可选：传入嵌入的前端 dist 文件系统。nil 表示不挂载（本地开发用 vite dev server）。
 	Frontend fs.FS
@@ -91,7 +100,9 @@ func Register(r *gin.Engine, d *Deps) {
 	{
 		registerVersion(api, d)
 		registerAuth(api, d)
-		registerChannels(api, d)
+		registerAccounts(api, d)
+		registerSites(api, d)
+		registerSiteAccountBundles(api, d)
 		registerCaptchas(api, d)
 		registerNotifications(api, d)
 		registerAnnouncements(api, d)
@@ -111,7 +122,7 @@ func Register(r *gin.Engine, d *Deps) {
 //
 //   - GET /assets/*  → 直接返回文件
 //   - GET /          → 返回 index.html
-//   - GET /channels  → 返回 index.html（React Router 客户端路由）
+//   - GET /accounts  → 返回 index.html（React Router 客户端路由）
 //
 // /api/*、/healthz 都已被前面的具体路由占了，不会走到这里。
 // 安全起见仍然做一次前缀拦截，避免任何意外情况下"未鉴权读 index.html"压到 /api 上。

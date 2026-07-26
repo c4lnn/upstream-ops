@@ -15,13 +15,15 @@ import (
 
 // Dispatcher 把单条事件 fan-out 到所有启用的通知渠道，并按 Policy 做去抖。
 type Dispatcher struct {
-	repo     *storage.Notifications
-	cipher   *crypto.Cipher
-	log      *slog.Logger
-	mu       sync.RWMutex
-	policy   Policy
-	proxy    config.ProxyConfig
-	cooldown CooldownStore
+	repo          *storage.Notifications
+	cipher        *crypto.Cipher
+	log           *slog.Logger
+	mu            sync.RWMutex
+	policy        Policy
+	proxy         config.ProxyConfig
+	cooldown      CooldownStore
+	rateEventMu   sync.Mutex
+	rateEventKeys map[string]struct{}
 }
 
 // NewDispatcher 用 *storage.Notifications 作为 CooldownStore 的具体实现，
@@ -37,11 +39,12 @@ func NewDispatcherWithCooldown(repo *storage.Notifications, cipher *crypto.Ciphe
 		policy.SendMaxAttempts = 1
 	}
 	return &Dispatcher{
-		repo:     repo,
-		cipher:   cipher,
-		log:      log,
-		policy:   policy,
-		cooldown: cooldown,
+		repo:          repo,
+		cipher:        cipher,
+		log:           log,
+		policy:        policy,
+		cooldown:      cooldown,
+		rateEventKeys: make(map[string]struct{}),
 	}
 }
 
@@ -108,125 +111,10 @@ func (d *Dispatcher) Dispatch(ctx context.Context, msg Message) error {
 	return d.fanout(ctx, msg, nil)
 }
 
-// DispatchRateBatch 把一次扫描收集到的多条 RateChange 按 Policy 合并 / 过滤后推送。
-//
-//   - 先按 MinChangePct 过滤掉小变动
-//   - 然后对每个通知渠道：先用它自己的 Subscriptions 切片出它关心的 changes，
-//     再按 BatchRateChanges 决定合并发送 1 条还是逐条发送
-//
-// 关键：合并消息只包含订阅匹配的子集，避免"全合并后 ModelName=” 被 groups 模式订阅过滤掉"的边界。
-func (d *Dispatcher) DispatchRateBatch(ctx context.Context, channel *storage.Channel, changes []RateChange) error {
-	return d.DispatchRateEventBatch(ctx, channel, storage.EventRateChanged, changes)
-}
-
-func (d *Dispatcher) DispatchRateEventBatch(ctx context.Context, channel *storage.Channel, event storage.NotificationEvent, changes []RateChange) error {
-	if channel == nil || len(changes) == 0 {
-		return nil
-	}
-	policy := d.Policy()
-
-	filtered := make([]RateChange, 0, len(changes))
-	for _, c := range changes {
-		if event != storage.EventRateChanged || c.ChangePctAbove(policy.MinChangePct) {
-			filtered = append(filtered, c)
-		}
-	}
-	if len(filtered) == 0 {
-		return nil
-	}
-
-	notifyChannels, err := d.repo.ListEnabledChannels()
-	if err != nil {
-		return err
-	}
-	if len(notifyChannels) == 0 {
-		return nil
-	}
-
-	var errs []error
-	for i := range notifyChannels {
-		nch := notifyChannels[i]
-		subs, _ := ParseSubscriptions(nch.Subscriptions)
-
-		// 切出该通知渠道关心的 changes 子集。
-		matching := subsetForSubscriptions(channel.ID, event, filtered, subs)
-		if len(matching) == 0 {
-			continue
-		}
-
-		if policy.BatchRateChanges {
-			merged := BuildRateBatchMessage(channel, event, matching)
-			if err := d.sendOne(ctx, &nch, merged); err != nil {
-				errs = append(errs, err)
-			}
-		} else {
-			// 用户显式关掉合并：仍按订阅切片，但逐条发。
-			for _, c := range matching {
-				single := BuildRateBatchMessage(channel, event, []RateChange{c})
-				if err := d.sendOne(ctx, &nch, single); err != nil {
-					errs = append(errs, err)
-				}
-			}
-		}
-	}
-	return errors.Join(errs...)
-}
-
-func (d *Dispatcher) DispatchRateStructureBatch(ctx context.Context, channel *storage.Channel, change RateStructureChange) error {
-	if channel == nil || len(change.Added)+len(change.Removed) == 0 {
-		return nil
-	}
-	notifyChannels, err := d.repo.ListEnabledChannels()
-	if err != nil {
-		return err
-	}
-	if len(notifyChannels) == 0 {
-		return nil
-	}
-
-	var errs []error
-	for i := range notifyChannels {
-		nch := notifyChannels[i]
-		subs, _ := ParseSubscriptions(nch.Subscriptions)
-		matching := RateStructureChange{
-			Added:   subsetForSubscriptions(channel.ID, storage.EventRateStructureChanged, change.Added, subs),
-			Removed: subsetForSubscriptions(channel.ID, storage.EventRateStructureChanged, change.Removed, subs),
-		}
-		if len(matching.Added)+len(matching.Removed) == 0 {
-			continue
-		}
-		msg := BuildRateStructureMessage(channel, matching)
-		if err := d.sendOne(ctx, &nch, msg); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
-}
-
-// subsetForSubscriptions 把 changes 过滤成"匹配 subs 订阅规则"的子集。
-// subs 为空（订阅一切）→ 返回全部。
-func subsetForSubscriptions(upstreamID uint, event storage.NotificationEvent, changes []RateChange, subs []Subscription) []RateChange {
-	if len(subs) == 0 {
-		return changes
-	}
-	out := make([]RateChange, 0, len(changes))
-	for _, c := range changes {
-		stub := Message{
-			Event:     event,
-			ChannelID: upstreamID,
-			ModelName: c.GroupName,
-		}
-		if AnyMatch(subs, stub) {
-			out = append(out, c)
-		}
-	}
-	return out
-}
-
 // suppress 判断是否要按 cooldown 跳过本次发送。
 func (d *Dispatcher) suppress(msg Message) bool {
 	policy := d.Policy()
-	if msg.ChannelID == 0 {
+	if msg.AccountID == 0 {
 		return false
 	}
 
@@ -242,25 +130,25 @@ func (d *Dispatcher) suppress(msg Message) bool {
 	if cooldown <= 0 {
 		return false
 	}
-	ok, err := d.cooldown.TryClaimCooldown(msg.ChannelID, msg.Event, cooldown)
+	ok, err := d.cooldown.TryClaimCooldown(msg.AccountID, msg.Event, cooldown)
 	if err != nil {
 		if d.log != nil {
 			d.log.Warn("cooldown lookup failed, sending anyway",
-				"err", err, "channel_id", msg.ChannelID, "event", msg.Event)
+				"err", err, "account_id", msg.AccountID, "event", msg.Event)
 		}
 		return false
 	}
 	if !ok && d.log != nil {
 		d.log.Debug("notification suppressed by cooldown",
 			"event", msg.Event,
-			"channel_id", msg.ChannelID,
+			"account_id", msg.AccountID,
 			"cooldown", cooldown,
 		)
 	}
 	return !ok
 }
 
-// fanout 广播给所有启用的通知渠道（仅给 Dispatch 用，DispatchRateBatch 自己控订阅切片）。
+// fanout 广播给所有启用的通知渠道（仅给 Dispatch 用，站点批次在 site_rates.go 自行控制订阅切片）。
 //
 // extraFilter 可选：用于在 ParseSubscriptions / AnyMatch 之后做额外裁剪；
 // 当前没有调用方传入，保留参数位是为以后扩展。
@@ -401,12 +289,13 @@ func backoffDelay(attempt int) time.Duration {
 
 func (d *Dispatcher) logResult(channelID uint, msg Message, sendErr error) {
 	log := &storage.NotificationLog{
-		ChannelID:         channelID,
-		UpstreamChannelID: msg.ChannelID,
-		Event:             msg.Event,
-		Subject:           msg.Subject,
-		Body:              msg.Body,
-		Success:           sendErr == nil,
+		NotificationChannelID: channelID,
+		AccountID:             msg.AccountID,
+		SiteID:                msg.SiteID,
+		Event:                 msg.Event,
+		Subject:               msg.Subject,
+		Body:                  msg.Body,
+		Success:               sendErr == nil,
 	}
 	if sendErr != nil {
 		log.ErrorMessage = sendErr.Error()

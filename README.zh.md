@@ -57,56 +57,89 @@ UpstreamOps 主要解决这些痛点：
 
 ## 功能概览
 
-### 上游渠道管理
+### 上游站点与账号管理
 
 - 支持 NewAPI / Sub2API 两类上游。
+- 一个站点就是一个真实上游实例，唯一拥有平台类型和规范化后的入口地址 `base_url`。
+- 一个站点可管理多个独立账号；账号只保留身份、凭据、会话、余额、消费、倍率、分组和异常状态，不能覆盖站点入口或平台类型。
+- 每个非空站点有且仅有一个默认账号，可显式切换；删除默认账号时必须选择同站点替代账号。账号不能移动到其他站点。
+- 修改站点入口必须明确确认。确认后系统会清除该站点全部账号会话并暂停监控，绝不会自动向新地址发送凭据。
 - 支持账号密码模式和 Token/Cookie 模式。
-- 支持启用或关闭单个渠道监控。
-- 支持自定义渠道排序，数值越大越靠前展示并优先参与监控。
+- 支持启用或关闭单个账号监控。
+- 支持自定义账号排序，数值越大越靠前展示。
 - 支持配置余额告警阈值。
 - 支持测试登录、手动同步余额、手动同步倍率。
 - 支持账号密码模式配置附加登录表单参数，适配需要额外字段的 NewAPI / Sub2API 魔改版登录接口。
 - 支持 Cloudflare Turnstile 打码配置，适用于开启 Turnstile 的上游登录场景。
-- 支持在渠道卡片中打开上游站点地址。
-- 支持在渠道卡片中清空已保存的登录信息。
-- 删除上游渠道时会自动清理相关快照、倍率、公告、通知冷却和通知日志。
+- 站点头部展示唯一上游入口；账号列表不再编辑 URL。
+- 支持在账号菜单中清空已保存的登录信息。
+- 删除账号时会自动清理该账号相关快照、倍率、通知冷却和通知日志；删除站点可显式级联清理其全部账号和站点公告。
+
+#### 站点账号配置包导入导出
+
+站点账号区域支持按站点导出 `upstream-ops/site-account-bundle` version 1 JSON 配置包，并在其他实例中先预检差异、再确认导入。站点持有 `type` 和 `base_url`，账号仅包含账号级配置；文件内关系不依赖数据库 ID。
+
+- 默认导出为脱敏配置包，不包含账号密码、Token、Cookie 或登录会话。导入脱敏包时，现有账号保留已有凭据；新账号因缺少凭据会关闭监控，需手动补充凭据后再测试登录。
+- 完整导出必须显式启用“包含账号凭据”并输入两次相同的导出密码。账号凭据会使用该密码派生密钥后重新加密，导出密码不会保存；导入受保护配置包时必须提供相同密码。
+- `create_only`（仅新增）会保留已匹配站点和账号的现有配置，只创建缺少的对象；`upsert`（更新或新增）会更新可迁移字段并创建缺少的对象。
+- 两种策略都不会删除配置包中未出现的现有站点或账号。正式导入前必须完成无副作用预检；存在阻断冲突时不能提交，提交则在单个数据库事务中完成。
+- `upsert` 中的站点入口变化是需要单独确认的安全变更。确认提交会复用入口修改语义：清会话、暂停受影响账号监控，不产生任何远端调用。
+- 旧 `upstream-ops/channel-bundle`、账号级 `type`、`site_url` 或 `base_url` 字段会被直接拒绝，不做转换。
+- 配置包明确排除余额、消费、倍率、公告、通知、监控日志、登录会话、冷却状态、上游 API Key、上游同步规则、数据库时间戳和其他运行历史，也不会复制充值、兑换、订阅等远端资源。
+- 导入成功后只刷新本地站点和账号数据，不会自动登录、测试连通性、采集数据、执行同步或访问上游；需要由用户随后对具体账号显式执行测试登录。
+
+### 破坏性升级说明
+
+当前版本只支持最终的站点/账号数据库模型：`upstream_sites` 与 `upstream_accounts`。旧版 `channels` 表、`channel_id` 关联、`/api/channels` 路由和旧渠道配置包均不兼容，也不会执行在线迁移。
+
+升级前请备份需要保留的信息，停止服务后按当前数据库类型重建开发库：
+
+- SQLite：删除配置的数据库文件，默认是 `data/upstream-ops.db`，也可能是 `DATABASE_PATH` 指向的文件。
+- MySQL：删除并重新创建 `DATABASE_NAME` 指向的开发 schema。
+
+应用检测到旧 `channels` schema 时会拒绝启动并提示重建数据库。
 
 ### Sub2API 上游同步管理
 
 - 系统设置页新增“上游动态同步”页签，用于管理可写入的 Sub2API 目标上游。
 - 支持保存目标上游地址和加密的 Admin API Key，并执行连通性检测、目标分组同步和代理列表查询。
-- 支持按源渠道、源分组、目标分组、代理、并发、权重、倍率换算、模型限制、池模式和自定义错误码维护同步分组与同步账号。
-- 支持同步源渠道模型或使用自定义模型列表，并可在应用同步前查询源模型。
+- 支持按源站点、源账号、源分组、目标分组、代理、并发、权重、倍率换算、模型限制、池模式和自定义错误码维护同步分组与同步账号。
+- 每个同步账号固定绑定一个源账号；分组查询、API Key 查询/创建/更新和 Reveal 始终使用该账号，失败后不会切换到同站点其他账号。
+- 支持同步源账号模型或使用自定义模型列表，并可在应用同步前查询源模型。
 - 支持为同步账号选择测试模型；测试失败时会禁用对应目标账号调度。
-- 分组名称模板支持 `{同步分组ID}`、`{渠道ID}`、`{源分组ID}` 占位符。
+- 分组名称模板支持 `{同步分组ID}`、`{账号ID}`、`{源分组ID}` 占位符。
 - 支持手动应用同步、删除托管对象和分页查看执行日志。
 - 倍率定时扫描完成后会自动重新应用已启用的同步分组。
 - 同步分组变更和应用结果可通过 `upstream_sync_group_changed` 事件通知。
 
 ### 余额与消费监控
 
-- 首页展示总余额、今日消费、累计消费、最低余额渠道、异常渠道数量。
+- 首页展示总余额、今日消费、累计消费、最低余额站点/账号、异常账号数量。
 - 支持周期性采集余额和消费。
 - 支持余额历史趋势图。
 - 支持余额低于阈值时通知推送。
-- 支持余额告警冷却，避免同一渠道持续低余额时刷屏。
+- 支持余额告警冷却，避免同一账号持续低余额时刷屏。
 - 支持按充值倍率换算余额、消费和兑换结果，可跟随上游倍率，也可手动选择除以或乘以倍率。
 
 ### 倍率监控
 
 - 支持同步上游分组/模型倍率。
 - 支持记录倍率变化历史。
-- 支持倍率变化历史分页查询和按渠道过滤。
+- 支持倍率变化历史分页查询和按账号过滤。
+- 「最近倍率变动」与完整历史按扫描批次（`scan_run_id`）聚合展示：同批次内数值完全相同的变化合并为一条并列出全部涉及账号（超过 3 个截断为 `+N`），分页总数与「今日倍率变动」计数均按变化项数统计，与推送标题的「N 项」口径一致；按账号过滤时仍逐账号展示。
 - 支持倍率变化通知。
 - 支持同一次扫描内多条倍率变化合并推送。
-- 支持同一次扫描内新增分组和删除分组合并为一条“分组变动通知”，通知标题格式为 `[分组变动通知] 渠道名 · 新增 X / 删除 Y`，正文会分别列出新增分组的倍率和删除分组的原倍率，避免新增、删除分开推送导致同一轮扫描刷屏。
+- 倍率与可用分组按账号独立保存；同一站点账号之间的数据不会互相覆盖。
+- 站点批量或定时扫描会在同一 `scan_run_id` 内按变化值聚合受影响账号，完全相同的变化只通知一次，不同变化仍分别列出。
+- 部分账号扫描失败时，成功账号的变化仍会通知，并明确列出未完成扫描的账号。
+- 支持同一次扫描内新增分组和删除分组合并为一条“分组变动通知”，通知标题格式为 `【分组变动通知】站点名 · N 项`，正文会分别列出新增分组的倍率和删除分组的原倍率，避免新增、删除分开推送导致同一轮扫描刷屏。
 - 支持按变化百分比过滤小幅变动。
-- 通知订阅可按上游渠道和倍率分组过滤。
-- 支持在监控页查看全部渠道分组，并按渠道或倍率搜索排序。
+- 通知订阅可按上游站点、账号和倍率分组过滤。
+- 支持在监控页查看全部账号分组，并按账号或倍率搜索排序。
 
 ### 订阅管理与用量监控
 
-针对 Sub2API 类型上游渠道，提供完整的订阅生命周期管理与用量监控能力：
+针对 Sub2API 类型上游账号，提供完整的订阅生命周期管理与用量监控能力：
 
 - 支持查询上游订阅计划与支付方式。
 - 支持购买或续订订阅，根据上游返回的支付方式自动选择二维码、跳转链接或表单提交。
@@ -117,8 +150,8 @@ UpstreamOps 主要解决这些痛点：
   - 周剩余百分比低于阈值时触发 `subscription_weekly_remaining_low` 事件。
   - 月剩余百分比低于阈值时触发 `subscription_monthly_remaining_low` 事件。
   - 订阅即将到期时触发 `subscription_expiring` 事件。
-- 支持订阅告警冷却，避免同一渠道订阅用量持续偏低时刷屏。
-- 订阅功能仅对 Sub2API 渠道生效，需在渠道配置中启用 `subscription_enabled` 开关。
+- 支持订阅告警冷却，避免同一账号订阅用量持续偏低时刷屏。
+- 订阅功能仅对 Sub2API 账号生效，需在账号配置中启用 `subscription_enabled` 开关。
 - 前端监控页面提供订阅用量摘要卡片和详细弹窗，支持按分组查看各订阅的用量进度条和剩余金额。
 
 ### 验证码余额管理
@@ -171,12 +204,13 @@ UpstreamOps 主要解决这些痛点：
 通知渠道支持订阅过滤：
 
 - 留空或 `[]`：接收全部事件。
-- `mode=all`：接收指定上游的全部事件。
+- 可订阅整个站点，也可展开站点只选择具体账号。
+- `mode=all`：接收指定站点或账号的全部事件。
 - `mode=groups`：倍率变化只接收指定分组；公告、余额、登录失败、监控失败等事件仍按上游渠道过滤，不受分组过滤影响。
 
 ### 上游 API Key 管理
 
-在渠道卡片中可以进入 API Key 管理：
+在账号卡片中可以进入 API Key 管理：
 
 - 查看上游 API Key 列表。
 - 按名称或 Key 搜索。
@@ -190,7 +224,7 @@ UpstreamOps 主要解决这些痛点：
 
 ### 充值与兑换
 
-在渠道卡片中可以直接处理上游充值和兑换：
+在账号卡片中可以直接处理上游充值和兑换：
 
 - 支持查询上游充值配置。
 - 支持支付宝 / 微信支付等上游返回的支付方式。
@@ -199,7 +233,7 @@ UpstreamOps 主要解决这些痛点：
 - 支持兑换码在线兑换。
 - 兑换成功后会根据返回内容展示余额、并发、分组订阅等结果。
 - 兑换对话框支持输入兑换码后即时兑换，结果展示兑换类型、价值、新余额、新并发、分组名称和有效期等信息。
-- Sub2API 渠道额外支持订阅购买与续订，可查询订阅计划（价格、周期、配额、日/周/月额度上限），选择合适的支付方式完成订阅。
+- Sub2API 账号额外支持订阅购买与续订，可查询订阅计划（价格、周期、配额、日/周/月额度上限），选择合适的支付方式完成订阅。
 - 充值与订阅支付均支持移动端自适应：移动设备优先跳转支付链接，桌面端优先展示支付二维码。
 
 ### 系统设置
@@ -257,7 +291,7 @@ ADMIN_USERNAME=admin
 ADMIN_PASSWORD=请替换为强密码
 ```
 
-Docker 默认拉取 `ghcr.io/bejix/upstream-ops:${IMAGE_TAG:-latest}`，不会在本机编译镜像。配置和数据都会写入宿主机项目目录下的 `data/`。
+Docker 默认拉取 `ghcr.io/c4lnn/upstream-ops:${IMAGE_TAG:-latest}`，不会在本机编译镜像。配置和数据都会写入宿主机项目目录下的 `data/`。
 
 启动：
 
@@ -290,7 +324,7 @@ IMAGE_TAG=latest
 生产环境建议锁定具体版本，例如：
 
 ```env
-IMAGE_TAG=v0.0.6
+IMAGE_TAG=v0.1.0
 ```
 
 ## MySQL 部署
@@ -443,9 +477,11 @@ POST /api/settings/proxy/test
 
 请求体使用同一份 `proxy` 配置结构。成功时返回 `ok`、`latency_ms`、`ip`、`provider`；失败时返回 `ok=false` 和 `error`。
 
-## 上游渠道配置
+## 上游站点与账号配置
 
-上游渠道支持单独开启 `proxy_enabled`。只有全局 `proxy.enabled=true` 且该渠道开启 `proxy_enabled` 时，上游登录、余额同步、倍率同步、公告同步、API Key 管理、充值兑换和订阅接口才会走代理。
+先创建站点并填写名称、平台类型和唯一的规范化 `base_url`，再在该站点下创建一个或多个账号。账号可单独开启 `proxy_enabled`；只有全局 `proxy.enabled=true` 且该账号开启 `proxy_enabled` 时，上游登录、余额同步、倍率同步、公告同步、API Key 管理、充值兑换和订阅接口才会走代理。
+
+账号不能提交独立的平台类型或 URL。修改站点入口必须提交 `confirm_base_url_change=true`，系统会清除该站点全部账号会话并暂停监控。
 
 ### NewAPI
 
@@ -453,7 +489,7 @@ POST /api/settings/proxy/test
 
 #### 账号密码模式
 
-填写上游站点地址、用户名、密码。若上游登录接口需要额外字段，可以在“附加表单参数”中填写 JSON 对象；若上游开启 Turnstile，需要先在“验证码服务”中配置打码平台，然后在渠道中启用 Turnstile。
+填写账号用户名和密码；站点地址属于父站点。若上游登录接口需要额外字段，可以在“附加表单参数”中填写 JSON 对象；若上游开启 Turnstile，需要先在“验证码服务”中配置打码平台，然后在账号中启用 Turnstile。
 
 #### Token/Cookie 模式
 
@@ -497,7 +533,7 @@ Token 模式凭据：
 
 ### 清空登录信息
 
-渠道卡片的“更多”菜单支持清空登录信息：
+账号卡片的“更多”菜单支持清空登录信息：
 
 - 账号密码模式：只清空缓存会话。
 - Token 模式：清空缓存会话，并清空已保存的 token/cookie 凭据 JSON。
@@ -619,13 +655,14 @@ Webhook 请求体示例：
 
 ```json
 [
-	{ "channel_ids": [1, 2], "mode": "all" },
-	{ "channel_ids": [3], "mode": "groups", "groups": ["default", "pro"], "events": ["rate_changed"] },
-	{ "channel_ids": [4], "mode": "all", "events": ["announcement", "monitor_failed"] }
+	{ "site_ids": [1, 2], "account_ids": [], "mode": "all" },
+	{ "site_ids": [], "account_ids": [3], "mode": "groups", "groups": ["default", "pro"], "events": ["rate_changed"] },
+	{ "site_ids": [4], "account_ids": [], "mode": "all", "events": ["announcement", "monitor_failed"] }
 ]
 ```
 
-- `channel_ids`：上游渠道 ID 列表。历史 `channel_id` 单值规则仍兼容。
+- `site_ids`：订阅整个用户自定义站点的 ID 列表。
+- `account_ids`：只订阅具体账号的 ID 列表。
 - `events`：事件类型列表。缺省、`null` 或 `[]` 表示接收该上游全部事件；非空时只接收指定事件。
 - `mode=all`：倍率类事件接收该上游所有分组。
 - `mode=groups`：倍率类事件只接收 `groups` 中指定的模型或分组。
@@ -633,7 +670,8 @@ Webhook 请求体示例：
 
 倍率相关事件的过滤规则：
 
-- 订阅规则会先按 `channel_id` 匹配上游，再按 `events` 匹配事件类型。
+- 订阅规则会先按 `site_ids` 或 `account_ids` 匹配范围，再按 `events` 匹配事件类型。
+- 同一通知渠道同时通过站点和账号范围命中时只派发一次；账号范围只保留包含所选账号的聚合条目。
 - `rate_changed` 会按当前倍率变化的分组名匹配 `groups`。
 - `rate_structure_changed` 是同一次扫描内新增分组和删除分组合并后的结构变动通知，也会按分组名匹配 `groups`。
 - 对于 `rate_structure_changed`，每个通知渠道会先按自己的订阅规则裁剪新增/删除分组列表，再生成该通知渠道看到的合并通知；因此订阅了不同分组的通知渠道不会看到自己未订阅的分组。
@@ -641,7 +679,7 @@ Webhook 请求体示例：
 
 公告事件的过滤规则：
 
-- 公告按 `channel_id` 匹配上游渠道。
+- 公告按站点范围匹配，同时记录实际读取公告的 `source_account_id`。
 - 分组过滤不影响公告事件。
 - 只要订阅命中该上游且 `events` 为空或包含 `announcement`，公告就会推送。
 
@@ -668,7 +706,7 @@ Webhook 请求体示例：
 
 ## 上游公告同步说明
 
-公告同步跟随倍率同步执行：
+公告同步跟随倍率同步执行，并且每个站点每批次只读取一次：
 
 - 定时倍率同步会同步公告。
 - 手动同步倍率也会同步公告。
@@ -676,12 +714,14 @@ Webhook 请求体示例：
 
 首次同步逻辑：
 
-- 如果某个上游渠道本地还没有公告记录，第一次拉到的公告只入库。
+- 如果某个上游站点本地还没有公告记录，第一次拉到的公告只入库。
 - 首次入库不发送通知，避免历史公告刷屏。
 
 后续同步逻辑：
 
-- 根据 `channel_id + source_key` 去重。
+- 根据 `upstream_site_id + source_key` 去重。
+- 优先使用启用的默认账号；认证失败、网络错误、超时或 HTTP 5xx 时按账号排序依次尝试其他启用账号。
+- 成功空结果会立即结束，非认证类 HTTP 4xx 也会立即返回，不会用其他账号覆盖业务错误。
 - NewAPI 优先使用公告 `id`。
 - NewAPI 没有 `id` 时使用内容、发布时间、类型等字段生成哈希。
 - NewAPI `/api/notice` 文本公告按文本内容生成哈希；文本变化会被视为新公告。
@@ -714,9 +754,9 @@ GET /api/announcements?page=1&page_size=20
 }
 ```
 
-渠道删除逻辑：
+账号与站点删除逻辑：
 
-- 删除上游渠道时，会自动删除该渠道关联的公告记录。
+- 删除账号会清理账号范围的运行数据；删除站点时才会清理该站点的公告记录。
 - 公告也可以通过保留策略按 `first_seen_at` 定期清理。
 
 ## 日志与分页接口
@@ -729,13 +769,13 @@ GET /api/announcements?page=1&page_size=20
 GET /api/notifications/logs?page=1&page_size=20
 ```
 
-返回内容会附带通知渠道名称、通知渠道类型，以及关联事件对应的上游渠道 ID，便于前端展示。
+返回内容会附带通知渠道名称、通知渠道类型，以及关联事件对应的 `account_id` 和 `site_id`，便于前端展示。
 
 倍率变化日志：
 
 ```text
 GET /api/rate-changes?page=1&page_size=20
-GET /api/rate-changes?channel_id=1&page=1&page_size=20
+GET /api/rate-changes?account_id=1&page=1&page_size=20
 ```
 
 公告列表：
@@ -744,13 +784,40 @@ GET /api/rate-changes?channel_id=1&page=1&page_size=20
 GET /api/announcements?page=1&page_size=20
 ```
 
-渠道列表分页：
+账号列表分页与账号操作：
 
 ```text
-GET /api/channels?page=1&page_size=20
-GET /api/channels?page=1&page_size=-1  (返回全部)
-POST /api/channels/:id/clear-login-info
+GET  /api/accounts?page=1&page_size=20
+GET  /api/accounts?page=1&page_size=-1  (返回全部)
+POST /api/accounts/:account_id/clear-login-info
 ```
+
+`/api/accounts/:account_id/...` 中的 `account_id` 始终表示具体账号 ID。测试登录、余额/倍率刷新、API Key、充值、兑换和订阅等账号操作只使用该账号，失败后不会跨账号重试。
+
+站点与账号管理接口：
+
+```text
+GET    /api/sites
+POST   /api/sites
+GET    /api/sites/:site_id
+PUT    /api/sites/:site_id
+DELETE /api/sites/:site_id?cascade=true
+POST   /api/sites/:site_id/sync
+POST   /api/sites/:site_id/accounts
+POST   /api/sites/:site_id/default-account
+```
+
+账号创建只能通过 `POST /api/sites/:site_id/accounts` 完成；账号更新不得提交 `site_id`、`type`、`base_url` 或 `site_url`。旧 `/api/channels` 及其任意子资源没有兼容转发，统一返回 404。
+
+站点账号配置包接口：
+
+```text
+POST /api/site-account-bundles/export
+POST /api/site-account-bundles/import/preview
+POST /api/site-account-bundles/import
+```
+
+导出请求使用 `site_ids`，完整导出还需 `include_credentials=true` 与导出密码。导入接口以 multipart 提交 `file`、`strategy`、可选 `password`；正式导入还必须带预检返回的 `digest`，站点入口变化则必须带 `confirm_base_url_changes=true`。
 
 返回统一分页结构：
 
@@ -795,10 +862,10 @@ POST   /api/upstream-sync/targets/:id/check
 POST   /api/upstream-sync/targets/:id/groups/sync
 GET    /api/upstream-sync/targets/:id/groups
 GET    /api/upstream-sync/targets/:id/proxies
-GET    /api/upstream-sync/source-models?channel_id=1&platform=openai
+GET    /api/upstream-sync/source-models?account_id=1&platform=openai
 ```
 
-`channel_id` 为必填参数。`platform` 为空时按 OpenAI 兼容接口查询，也支持 `gemini`；可选参数包括 `source_group_id`、`source_group_name` 和 `sync_account_id`。
+`account_id` 为源账号 ID，必填。`platform` 为空时按 OpenAI 兼容接口查询，也支持 `gemini`；可选参数包括 `source_group_id`、`source_group_name` 和 `sync_account_id`。
 
 同步分组接口：
 
@@ -813,7 +880,7 @@ GET    /api/upstream-sync/sync-groups/:id/logs?page=1&page_size=20
 ```
 
 - 目标 Admin API Key 使用 `APP_SECRET` 加密保存。
-- “删除托管对象”会请求删除远端 Sub2API 账号和对应的源渠道 API Key，随后清理本地映射，不会删除目标分组。
+- “删除托管对象”会请求删除远端 Sub2API 账号和对应的源账号 API Key，随后清理本地映射，不会删除目标分组。
 - 直接删除目标上游或同步分组只会清理本地记录；如需清理远端对象，应先执行“删除托管对象”。
 - 应用同步时如果源分组不存在，会将对应的远端账号设为停用，保留同步槽位。
 - 启用账号测试后，测试通过才会启用目标账号调度；失败时会保留账号并记录失败原因。
@@ -833,8 +900,8 @@ GET    /api/upstream-sync/sync-groups/:id/logs?page=1&page_size=20
 充值接口：
 
 ```text
-GET  /api/channels/:id/recharge-info         查询充值信息
-POST /api/channels/:id/recharge              发起充值
+GET  /api/accounts/:account_id/recharge-info 查询充值信息
+POST /api/accounts/:account_id/recharge      发起充值
 ```
 
 兑换能力：
@@ -846,7 +913,7 @@ POST /api/channels/:id/recharge              发起充值
 兑换接口：
 
 ```text
-POST /api/channels/:id/redeem               兑换码兑换
+POST /api/accounts/:account_id/redeem       兑换码兑换
 ```
 
 请求体：
@@ -871,12 +938,12 @@ POST /api/channels/:id/redeem               兑换码兑换
 
 ## 订阅管理说明
 
-订阅管理仅对 Sub2API 渠道生效，需在渠道配置中启用 `subscription_enabled`。
+订阅管理仅对 Sub2API 站点下的账号生效，需在账号配置中启用 `subscription_enabled`。
 
 订阅计划查询：
 
 ```text
-GET /api/channels/:id/subscription-info
+GET /api/accounts/:account_id/subscription-info
 ```
 
 返回上游可用的订阅计划（价格、周期、配额、日/周/月额度上限）和支付方式。
@@ -884,7 +951,7 @@ GET /api/channels/:id/subscription-info
 订阅购买/续订：
 
 ```text
-POST /api/channels/:id/subscription
+POST /api/accounts/:account_id/subscription
 ```
 
 请求体：
@@ -902,7 +969,7 @@ POST /api/channels/:id/subscription
 订阅用量查询：
 
 ```text
-GET /api/channels/:id/subscription-usage
+GET /api/accounts/:account_id/subscription-usage
 ```
 
 返回每个订阅的用量详情：
@@ -982,16 +1049,18 @@ DELETE /api/captcha-configs/:id                删除验证码配置
 部分操作耗时较长（如测试登录、批量同步余额和倍率），后端通过 Server-Sent Events（SSE）向前端推送实时进度：
 
 - 测试登录时会推送登录进度、Turnstile 求解状态和最终结果。
-- 单渠道同步会串行推送余额同步和倍率同步的进度。
-- 全量同步会推送每个渠道的同步进度，附带渠道索引（当前数/总数）。
+- 单账号同步会串行推送余额同步和倍率同步的进度。
+- 全量同步会推送每个账号的同步进度，附带账号索引（当前数/总数）。
+- 站点“同步全部账号”会 fan-out 为独立账号操作并返回逐账号结果；单个账号失败不会阻止其他账号，也不会用成功账号结果覆盖失败账号。
 - 前端通过 `ReadableStream` 消费 SSE 事件流，在 UI 中实时展示进度状态和结果摘要。
 
 SSE 接口：
 
 ```text
-POST /api/channels/:id/test-login              测试登录（SSE）
-POST /api/channels/:id/sync                    单渠道同步（SSE）
-POST /api/channels/sync-all                    全量同步（SSE）
+POST /api/accounts/:account_id/test-login      测试登录（SSE）
+POST /api/accounts/:account_id/sync            单账号同步（SSE）
+POST /api/accounts/sync-all                    全量同步（SSE）
+POST /api/sites/:site_id/sync                  站点全部账号同步（JSON）
 ```
 
 响应格式为 `text/event-stream`，每行格式：
@@ -1016,9 +1085,23 @@ data: {“event”:”progress”,”message”:”...”,”step”:1,”total�
 - 余额同步：每 15 分钟。
 - 倍率同步：每 30 分钟。
 - Sub2API 上游同步：倍率同步完成后自动应用已启用的同步分组。
-- 订阅用量检查：随余额同步执行，对启用订阅的 Sub2API 渠道自动采集用量并触发低余量/到期告警。
+- 订阅用量检查：随余额同步执行，对启用订阅的 Sub2API 账号自动采集用量并触发低余量/到期告警。
 - 验证码余额刷新：随调度自动刷新，也可手动刷新。
 - 历史清理：每天凌晨执行。
+
+扫描批次超时配置：
+
+```yaml
+scheduler:
+  balanceTimeoutSeconds: 300
+  rateTimeoutSeconds: 300
+```
+
+- `scheduler.balanceTimeoutSeconds`：一整轮余额、消费和订阅用量扫描的最长运行时间，默认 `300` 秒。
+- `scheduler.rateTimeoutSeconds`：一整轮倍率与公告扫描的最长运行时间，默认 `300` 秒；批次超时后不会继续启动该轮的上游同步。
+- 缺失、`0` 或负数都会按默认 `300` 秒处理。
+- `upstream.timeoutSeconds` 是单次访问上游站点的 HTTP 请求超时，和上述整轮扫描批次超时相互独立。
+- 同一种定时任务的上一轮尚未实际返回时，新的 Cron 触发会被跳过并记录日志，不会排队补跑；余额扫描、倍率扫描和历史清理彼此独立，可以同时运行。
 
 默认保留策略：
 

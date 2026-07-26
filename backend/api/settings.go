@@ -71,7 +71,7 @@ func saveSettingsConfig(c *gin.Context, d *Deps) {
 	cfg.App.Title = in.App.Title
 	cfg.App.NotificationPrefix = in.App.NotificationPrefix
 	cfg.Auth = in.Auth
-	cfg.Scheduler = in.Scheduler
+	cfg.Scheduler = in.Scheduler.WithDefaults()
 	cfg.Notifications = in.Notifications
 	cfg.Proxy = in.Proxy
 	cfg.Upstream = in.Upstream.WithDefaults()

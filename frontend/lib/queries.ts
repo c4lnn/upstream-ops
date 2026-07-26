@@ -7,16 +7,16 @@ import type {
   AppVersion,
   BalanceTrendPoint,
   CaptchaConfig,
-  Channel,
-  ChannelPage,
   CostTrendPoint,
   DashboardSummary,
   NotificationChannel,
   NotificationLogPage,
-  RateChangeLogPage,
+  RateChangeGroupPage,
   RateSnapshot,
   SystemConfigResponse,
   UpstreamAnnouncementPage,
+  UpstreamAccount,
+  UpstreamSite,
 } from "@/lib/api-types"
 
 export interface QueryState<T> {
@@ -145,30 +145,30 @@ export function useCostTrend(days = 7) {
   return useApi<CostTrendPoint[]>(`/dashboard/cost-trend?days=${days}`)
 }
 
-export function useChannels() {
-  return useApi<Channel[]>("/channels")
+export function useAccounts() {
+  return useApi<UpstreamAccount[]>("/accounts")
 }
 
-export function useChannelsPage(page = 1, pageSize = 9) {
-  return useApi<ChannelPage>(`/channels?page=${page}&page_size=${pageSize}`)
+export function useSites() {
+  return useApi<UpstreamSite[]>("/sites")
 }
 
-export function useChannelRates(channelID: number | null) {
-  return useApi<RateSnapshot[]>(channelID == null ? null : `/channels/${channelID}/rates`)
+export function useAccountRates(accountID: number | null) {
+  return useApi<RateSnapshot[]>(accountID == null ? null : `/accounts/${accountID}/rates`)
 }
 
-// useMultiChannelRates 把多个上游渠道的倍率分组拉回来合并去重，
-// 供订阅规则"多选渠道 + 指定分组"场景使用。复用 fetchShared 缓存，
-// 单渠道请求仍与 useChannelRates 共享，不会重复打接口。
-export function useMultiChannelRates(channelIDs: number[]) {
+// useMultiAccountRates 将多个上游账号的倍率分组合并去重，
+// 供订阅规则“多选账号 + 指定分组”使用。复用 fetchShared 缓存，
+// 单账号请求仍与 useAccountRates 共享，不会重复打接口。
+export function useMultiAccountRates(accountIDs: number[]) {
   const [data, setData] = useState<RateSnapshot[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [bump, setBump] = useState(0)
   const refreshTick = useRefreshTick()
-  const key = channelIDs.slice().sort((a, b) => a - b).join(",")
+  const key = accountIDs.slice().sort((a, b) => a - b).join(",")
 
   useEffect(() => {
-    if (channelIDs.length === 0) {
+    if (accountIDs.length === 0) {
       setData(null)
       setLoading(false)
       return
@@ -176,10 +176,10 @@ export function useMultiChannelRates(channelIDs: number[]) {
     let cancelled = false
     setLoading(true)
     Promise.all(
-      channelIDs.map((id) =>
+      accountIDs.map((id) =>
         fetchShared<RateSnapshot[]>(
-          `/channels/${id}/rates`,
-          cacheKey(`/channels/${id}/rates`, refreshTick, bump),
+          `/accounts/${id}/rates`,
+          cacheKey(`/accounts/${id}/rates`, refreshTick, bump),
         ),
       ),
     )
@@ -196,18 +196,18 @@ export function useMultiChannelRates(channelIDs: number[]) {
     return () => {
       cancelled = true
     }
-    // channelIDs 是数组引用，用排序后的 key 字符串做依赖避免每次渲染都触发
+    // accountIDs 是数组引用，用排序后的 key 字符串做依赖避免每次渲染都触发。
   }, [key, refreshTick, bump])
 
   return { data, loading, refetch: () => setBump((b) => b + 1) }
 }
 
-export function useRateChanges(page = 1, pageSize = 20, channelID?: number) {
+export function useRateChanges(page = 1, pageSize = 20, accountID?: number) {
   const q = new URLSearchParams()
   q.set("page", String(page))
   q.set("page_size", String(pageSize))
-  if (channelID != null) q.set("channel_id", String(channelID))
-  return useApi<RateChangeLogPage>(`/rate-changes?${q.toString()}`)
+  if (accountID != null) q.set("account_id", String(accountID))
+  return useApi<RateChangeGroupPage>(`/rate-changes?${q.toString()}`)
 }
 
 export function useNotificationChannels() {

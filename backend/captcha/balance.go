@@ -127,6 +127,9 @@ func RefreshAllBalancesWithProxy(ctx context.Context, repo *storage.Captchas, ci
 	}
 	results := make([]BalanceRefreshResult, 0, len(list))
 	for i := range list {
+		if err := ctx.Err(); err != nil {
+			return results, err
+		}
 		cfg := &list[i]
 		updated, err := RefreshBalanceWithProxy(ctx, repo, cipher, cfg, proxyCfg)
 		if err != nil && log != nil {

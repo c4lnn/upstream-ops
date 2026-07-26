@@ -45,7 +45,7 @@ export function LoginPage() {
       <Card className="w-full max-w-sm">
         <CardHeader className="space-y-1.5">
           <CardTitle className="text-2xl">{appTitle}</CardTitle>
-          <CardDescription>登录后台，监控渠道余额和倍率。</CardDescription>
+          <CardDescription>登录后台，监控站点账号的余额和倍率。</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">

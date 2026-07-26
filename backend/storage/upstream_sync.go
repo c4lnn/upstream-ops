@@ -243,6 +243,12 @@ func (r *UpstreamSyncAccounts) SaveForGroup(syncGroupID uint, list []UpstreamSyn
 			}
 			list[i].SourceGroupName = strings.TrimSpace(list[i].SourceGroupName)
 			list[i].TestModel = strings.TrimSpace(list[i].TestModel)
+			if list[i].SourceSiteID == 0 && list[i].SourceAccountID != 0 {
+				var account UpstreamAccount
+				if err := tx.Select("id", "site_id").First(&account, list[i].SourceAccountID).Error; err == nil {
+					list[i].SourceSiteID = account.SiteID
+				}
+			}
 			if list[i].ID == 0 {
 				if err := tx.Create(&list[i]).Error; err != nil {
 					return err
@@ -251,7 +257,8 @@ func (r *UpstreamSyncAccounts) SaveForGroup(syncGroupID uint, list []UpstreamSyn
 				if err := tx.Model(&UpstreamSyncAccount{}).Where("id = ?", list[i].ID).Updates(map[string]any{
 					"sync_group_id":      list[i].SyncGroupID,
 					"position":           list[i].Position,
-					"source_channel_id":  list[i].SourceChannelID,
+					"source_site_id":     list[i].SourceSiteID,
+					"source_account_id":  list[i].SourceAccountID,
 					"source_group_id":    list[i].SourceGroupID,
 					"source_group_name":  list[i].SourceGroupName,
 					"proxy_id":           list[i].ProxyID,

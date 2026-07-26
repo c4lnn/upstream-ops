@@ -171,7 +171,7 @@ export default function SettingsPage() {
   async function handleDeleteCaptcha(item: CaptchaConfig) {
     const ok = await confirm({
       title: `删除验证码服务 ${item.name}？`,
-      description: "删除后引用此服务的渠道需要重新指定验证码服务。",
+      description: "删除后引用此服务的账号需要重新指定验证码服务。",
       confirmLabel: "删除",
       destructive: true,
     });
@@ -562,6 +562,52 @@ export default function SettingsPage() {
                   />
                 </Field>
                 <Field
+                  label="余额扫描批次超时（秒）"
+                  description="整轮余额扫描最长运行时间；小于等于 0 时使用默认 300 秒。"
+                >
+                  <Input
+                    type="number"
+                    min={0}
+                    value={String(form.scheduler.balanceTimeoutSeconds)}
+                    onChange={(e) =>
+                      setForm((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              scheduler: {
+                                ...prev.scheduler,
+                                balanceTimeoutSeconds: num(e.target.value),
+                              },
+                            }
+                          : prev,
+                      )
+                    }
+                  />
+                </Field>
+                <Field
+                  label="倍率扫描批次超时（秒）"
+                  description="整轮倍率扫描最长运行时间；小于等于 0 时使用默认 300 秒。"
+                >
+                  <Input
+                    type="number"
+                    min={0}
+                    value={String(form.scheduler.rateTimeoutSeconds)}
+                    onChange={(e) =>
+                      setForm((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              scheduler: {
+                                ...prev.scheduler,
+                                rateTimeoutSeconds: num(e.target.value),
+                              },
+                            }
+                          : prev,
+                      )
+                    }
+                  />
+                </Field>
+                <Field
                   label="并发数"
                   description="调度器每轮最多同时处理的任务数。"
                 >
@@ -903,7 +949,7 @@ export default function SettingsPage() {
           <SectionCard
             icon={<Server className="size-4 text-indigo-600" />}
             title="上游请求"
-            description="配置渠道访问上游站点时使用的超时时间和 User-Agent。"
+            description="配置账号访问上游站点时使用的超时时间和 User-Agent。"
           >
             <div className="grid gap-4 md:grid-cols-2">
               <Field label="超时时间（秒）" description="小于等于 0 时使用默认 30 秒。">
@@ -951,7 +997,7 @@ export default function SettingsPage() {
           <SectionCard
             icon={<Network className="size-4 text-cyan-600" />}
             title="代理 IP"
-            description="配置渠道上游请求使用的全局代理。只有渠道里开启代理 IP 的账号会使用这里的配置。"
+            description="配置账号上游请求使用的全局代理。只有开启代理 IP 的账号会使用这里的配置。"
             action={
               <Button
                 size="sm"
@@ -1222,7 +1268,7 @@ export default function SettingsPage() {
                             </div>
                             <p className="text-xs text-muted-foreground">
                               {subCount === 0
-                                ? "订阅全部渠道和分组"
+                                ? "订阅全部站点和分组"
                                 : `已配置 ${subCount} 条订阅规则`}
                             </p>
                           </div>
@@ -1239,6 +1285,7 @@ export default function SettingsPage() {
                           <Button
                             size="icon-sm"
                             variant="ghost"
+                            aria-label={`编辑通知渠道 ${channel.name}`}
                             onClick={() => {
                               setEditingNotification(channel);
                               setNotificationOpen(true);
@@ -1249,6 +1296,7 @@ export default function SettingsPage() {
                           <Button
                             size="icon-sm"
                             variant="ghost"
+                            aria-label={`删除通知渠道 ${channel.name}`}
                             className="text-destructive hover:bg-destructive/10 hover:text-destructive"
                             disabled={busyNotificationID === channel.id}
                             onClick={() => handleDeleteNotification(channel)}
@@ -1269,7 +1317,7 @@ export default function SettingsPage() {
           <SectionCard
             icon={<KeyRound className="size-4 text-rose-600" />}
             title="验证码服务"
-            description="管理用于处理 Turnstile 的打码平台，供渠道登录时自动调用。"
+            description="管理用于处理 Turnstile 的打码平台，供账号登录时自动调用。"
             action={
               <Button
                 size="sm"
@@ -1293,7 +1341,7 @@ export default function SettingsPage() {
               <MiniMetric
                 title="用途"
                 value="登录验证"
-                hint="渠道启用 Turnstile 时调用"
+                hint="账号启用 Turnstile 时调用"
               />
             </div>
             {captchas.loading ? (
@@ -1301,7 +1349,7 @@ export default function SettingsPage() {
             ) : !captchas.data || captchas.data.length === 0 ? (
               <EmptyPanel
                 title="还没有验证码服务"
-                description="如果某些渠道登录需要 Turnstile 验证，在这里接入 CapSolver、2Captcha 等服务。"
+                description="如果某些账号登录需要 Turnstile 验证，在这里接入 CapSolver、2Captcha 等服务。"
               />
             ) : (
               <div className="space-y-3">

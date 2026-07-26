@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -21,10 +23,10 @@ func loadTrendLocation() *time.Location {
 	return loc
 }
 
-// ListByChannel 返回渠道当前所有倍率快照。
-func (r *Rates) ListByChannel(channelID uint) ([]RateSnapshot, error) {
+// ListByAccount returns all current rate snapshots for an account.
+func (r *Rates) ListByAccount(accountID uint) ([]RateSnapshot, error) {
 	var list []RateSnapshot
-	if err := r.db.Where("channel_id = ?", channelID).Order("model_name ASC").Find(&list).Error; err != nil {
+	if err := r.db.Where("account_id = ?", accountID).Order("model_name ASC").Find(&list).Error; err != nil {
 		return nil, err
 	}
 	return list, nil
@@ -32,9 +34,12 @@ func (r *Rates) ListByChannel(channelID uint) ([]RateSnapshot, error) {
 
 // Upsert 更新或插入倍率快照，返回此前的记录（若有），调用方据此判断是否变化。
 func (r *Rates) Upsert(snapshot *RateSnapshot) (*RateSnapshot, error) {
+	if snapshot.StableGroupKey == "" {
+		snapshot.StableGroupKey = StableRateGroupKey(snapshot.RemoteGroupID, snapshot.ModelName)
+	}
 	var prev RateSnapshot
 	err := r.db.
-		Where("channel_id = ? AND model_name = ?", snapshot.ChannelID, snapshot.ModelName).
+		Where("account_id = ? AND stable_group_key = ?", snapshot.AccountID, snapshot.StableGroupKey).
 		First(&prev).Error
 	switch {
 	case err == nil:
@@ -42,6 +47,8 @@ func (r *Rates) Upsert(snapshot *RateSnapshot) (*RateSnapshot, error) {
 		prev.Ratio = snapshot.Ratio
 		prev.CompletionRatio = snapshot.CompletionRatio
 		prev.RemoteGroupID = snapshot.RemoteGroupID
+		prev.StableGroupKey = snapshot.StableGroupKey
+		prev.ModelName = snapshot.ModelName
 		prev.Description = snapshot.Description
 		prev.LastSeenAt = snapshot.LastSeenAt
 		if err := r.db.Save(&prev).Error; err != nil {
@@ -66,27 +73,61 @@ func (r *Rates) AppendChange(log *RateChangeLog) error {
 	return r.db.Create(log).Error
 }
 
-func (r *Rates) DeleteSnapshot(channelID uint, modelName string) error {
-	return r.db.Where("channel_id = ? AND model_name = ?", channelID, modelName).Delete(&RateSnapshot{}).Error
+func (r *Rates) DeleteSnapshot(accountID uint, modelName string) error {
+	return r.db.Where("account_id = ? AND model_name = ?", accountID, modelName).Delete(&RateSnapshot{}).Error
 }
 
-// ListChanges 倒序拉取倍率变化日志。channelID 为 0 表示不过滤。
-func (r *Rates) ListChanges(channelID uint, limit int) ([]RateChangeLog, error) {
-	if limit <= 0 {
-		limit = 50
-	}
-	q := r.db.Model(&RateChangeLog{}).Order("changed_at DESC").Limit(limit)
-	if channelID != 0 {
-		q = q.Where("channel_id = ?", channelID)
-	}
-	var list []RateChangeLog
-	if err := q.Find(&list).Error; err != nil {
-		return nil, err
-	}
-	return list, nil
+func (r *Rates) DeleteSnapshotByKey(accountID uint, stableGroupKey string) error {
+	return r.db.Where("account_id = ? AND stable_group_key = ?", accountID, stableGroupKey).Delete(&RateSnapshot{}).Error
 }
 
-func (r *Rates) ListChangesPage(channelID uint, page, pageSize int) ([]RateChangeLog, int64, error) {
+func StableRateGroupKey(remoteGroupID *int64, modelName string) string {
+	if remoteGroupID != nil {
+		return fmt.Sprintf("id:%d", *remoteGroupID)
+	}
+	return "name:" + strings.TrimSpace(modelName)
+}
+
+// RateChangeGroup 一次扫描批次内的同一变化及其全部账号成员行。
+// Latest 是组内 id 最大的代表行；ChangedAt 取组内最大变化时间。
+type RateChangeGroup struct {
+	Latest    RateChangeLog
+	ChangedAt time.Time
+	Members   []RateChangeLog
+}
+
+// rateChangeGroupSQLKey 与 rateChangeGroupKey 必须表达同一合并语义：
+// site_id + scan_run_id + 分组 + 变化类型 + 新旧倍率；空 scan_run_id 的行按自身 id 独立成组。
+const rateChangeGroupSQLKey = "site_id, scan_run_id, stable_group_key, change_type, old_ratio, new_ratio, old_completion_ratio, new_completion_ratio, CASE WHEN scan_run_id = '' THEN id ELSE 0 END"
+
+func rateChangeGroupKey(l *RateChangeLog) string {
+	if l.ScanRunID == "" {
+		return fmt.Sprintf("row|%d", l.ID)
+	}
+	return fmt.Sprintf("%d|%s|%s|%s|%s|%g|%s|%g",
+		l.SiteID, l.ScanRunID, l.StableGroupKey, l.ChangeType,
+		floatPtrKey(l.OldRatio), l.NewRatio, floatPtrKey(l.OldCompletionRatio), l.NewCompletionRatio)
+}
+
+func floatPtrKey(v *float64) string {
+	if v == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%g", *v)
+}
+
+func (r *Rates) changeGroupQuery(accountID uint) *gorm.DB {
+	q := r.db.Model(&RateChangeLog{}).Group(rateChangeGroupSQLKey)
+	if accountID != 0 {
+		q = q.Where("account_id = ?", accountID)
+	}
+	return q
+}
+
+// ListChangeGroupsPage 按扫描批次聚合分页倍率变化：
+// total、page、pageSize 均以聚合组为单位，组按最大 changed_at 倒序，合并组不会被分页劈开。
+// accountID != 0 时先过滤成员再聚合，单账号视角下聚合为恒等操作。
+func (r *Rates) ListChangeGroupsPage(accountID uint, page, pageSize int) ([]RateChangeGroup, int64, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -94,24 +135,90 @@ func (r *Rates) ListChangesPage(channelID uint, page, pageSize int) ([]RateChang
 		pageSize = 20
 	}
 
-	q := r.db.Model(&RateChangeLog{})
-	if channelID != 0 {
-		q = q.Where("channel_id = ?", channelID)
-	}
-
 	var total int64
-	if err := q.Count(&total).Error; err != nil {
+	countQuery := r.changeGroupQuery(accountID).Select("1")
+	if err := r.db.Table("(?) AS grouped_changes", countQuery).Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
+	if total == 0 {
+		return []RateChangeGroup{}, 0, nil
+	}
 
-	var list []RateChangeLog
-	if err := q.Order("changed_at DESC").
+	var reps []struct {
+		RepID uint `gorm:"column:rep_id"`
+	}
+	if err := r.changeGroupQuery(accountID).
+		Select("MAX(id) AS rep_id").
+		Order("MAX(changed_at) DESC, MAX(id) DESC").
 		Offset((page - 1) * pageSize).
 		Limit(pageSize).
-		Find(&list).Error; err != nil {
+		Scan(&reps).Error; err != nil {
 		return nil, 0, err
 	}
-	return list, total, nil
+	if len(reps) == 0 {
+		return []RateChangeGroup{}, total, nil
+	}
+
+	repIDs := make([]uint, 0, len(reps))
+	repOrder := make(map[uint]int, len(reps))
+	for i, rep := range reps {
+		repIDs = append(repIDs, rep.RepID)
+		repOrder[rep.RepID] = i
+	}
+	var repRows []RateChangeLog
+	if err := r.db.Where("id IN ?", repIDs).Find(&repRows).Error; err != nil {
+		return nil, 0, err
+	}
+
+	groups := make([]RateChangeGroup, len(reps))
+	position := make(map[string]int, len(repRows))
+	runIDs := make([]string, 0, len(repRows))
+	seenRuns := make(map[string]struct{}, len(repRows))
+	emptyRunIDs := make([]uint, 0)
+	for i := range repRows {
+		row := repRows[i]
+		pos := repOrder[row.ID]
+		groups[pos] = RateChangeGroup{Latest: row}
+		position[rateChangeGroupKey(&row)] = pos
+		if row.ScanRunID == "" {
+			emptyRunIDs = append(emptyRunIDs, row.ID)
+			continue
+		}
+		if _, ok := seenRuns[row.ScanRunID]; !ok {
+			seenRuns[row.ScanRunID] = struct{}{}
+			runIDs = append(runIDs, row.ScanRunID)
+		}
+	}
+
+	memberQuery := r.db.Model(&RateChangeLog{})
+	if accountID != 0 {
+		memberQuery = memberQuery.Where("account_id = ?", accountID)
+	}
+	switch {
+	case len(runIDs) > 0 && len(emptyRunIDs) > 0:
+		memberQuery = memberQuery.Where("scan_run_id IN ? OR id IN ?", runIDs, emptyRunIDs)
+	case len(runIDs) > 0:
+		memberQuery = memberQuery.Where("scan_run_id IN ?", runIDs)
+	default:
+		memberQuery = memberQuery.Where("id IN ?", emptyRunIDs)
+	}
+	var members []RateChangeLog
+	if err := memberQuery.Order("account_id ASC, id ASC").Find(&members).Error; err != nil {
+		return nil, 0, err
+	}
+
+	for i := range members {
+		row := members[i]
+		pos, ok := position[rateChangeGroupKey(&row)]
+		if !ok {
+			continue
+		}
+		groups[pos].Members = append(groups[pos].Members, row)
+		if row.ChangedAt.After(groups[pos].ChangedAt) {
+			groups[pos].ChangedAt = row.ChangedAt
+		}
+	}
+	return groups, total, nil
 }
 
 func (r *Rates) AppendBalance(s *BalanceSnapshot) error {
@@ -141,13 +248,13 @@ func (r *Rates) DeleteCostSnapshotsBefore(cutoff time.Time) (int64, error) {
 }
 
 // BalanceHistory 倒序拉取余额历史。
-func (r *Rates) BalanceHistory(channelID uint, limit int) ([]BalanceSnapshot, error) {
+func (r *Rates) BalanceHistory(accountID uint, limit int) ([]BalanceSnapshot, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	var list []BalanceSnapshot
 	if err := r.db.
-		Where("channel_id = ?", channelID).
+		Where("account_id = ?", accountID).
 		Order("sampled_at DESC").
 		Limit(limit).
 		Find(&list).Error; err != nil {
@@ -170,7 +277,7 @@ type DailyCostAggregate struct {
 
 // AggregateBalanceTrend 取最近 N 天的"日内最后一次余额"按渠道之和，作为总余额趋势。
 //
-// 实现：对每个 (channel_id, day) 取该天最后一次 BalanceSnapshot 的余额，再按 day 求和，
+// 实现：对每个 (account_id, day) 取该天最后一次 BalanceSnapshot 的余额，再按 day 求和，
 // 然后补齐窗口内缺失的日期。窗口内完全没有采样时返回空数组。
 func (r *Rates) AggregateBalanceTrend(days int) ([]DailyAggregate, error) {
 	if days <= 0 {
@@ -191,14 +298,14 @@ func (r *Rates) AggregateBalanceTrend(days int) ([]DailyAggregate, error) {
 	}
 
 	type key struct {
-		ChannelID uint
+		AccountID uint
 		Day       time.Time
 	}
 
 	latest := make(map[key]BalanceSnapshot, len(snapshots))
 	for _, snapshot := range snapshots {
 		day := dayStart(snapshot.SampledAt)
-		latest[key{ChannelID: snapshot.ChannelID, Day: day}] = snapshot
+		latest[key{AccountID: snapshot.AccountID, Day: day}] = snapshot
 	}
 
 	byDay := make(map[string]float64, days)
@@ -234,14 +341,14 @@ func (r *Rates) AggregateCostTrend(days int) ([]DailyCostAggregate, error) {
 	}
 
 	type key struct {
-		ChannelID uint
+		AccountID uint
 		Day       time.Time
 	}
 
 	latest := make(map[key]CostSnapshot, len(snapshots))
 	for _, snapshot := range snapshots {
 		day := dayStart(snapshot.SampledAt)
-		latest[key{ChannelID: snapshot.ChannelID, Day: day}] = snapshot
+		latest[key{AccountID: snapshot.AccountID, Day: day}] = snapshot
 	}
 
 	byDay := make(map[string]float64, days)

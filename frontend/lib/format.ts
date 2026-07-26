@@ -86,15 +86,3 @@ export function ratioDelta(from: number | null | undefined, to: number) {
   const direction = pct >= 0 ? ("up" as const) : ("down" as const)
   return { direction, pct: `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%` }
 }
-
-/** 把 ChannelType "newapi"/"sub2api" 转成显示名 / 角标颜色。 */
-export function channelTypeLabel(t: string) {
-  switch (t) {
-    case "newapi":
-      return "NewAPI"
-    case "sub2api":
-      return "Sub2API"
-    default:
-      return t
-  }
-}

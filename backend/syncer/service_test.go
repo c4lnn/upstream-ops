@@ -21,7 +21,7 @@ import (
 	"gorm.io/gorm"
 )
 
-type fakeChannelService struct {
+type fakeAccountService struct {
 	keys        []connector.APIKey
 	groups      []connector.APIKeyGroup
 	searchMiss  bool
@@ -32,7 +32,7 @@ type fakeChannelService struct {
 	lastUpdate  connector.APIKeyUpdateRequest
 }
 
-func (f *fakeChannelService) RevealAPIKey(ctx context.Context, channelID uint, keyID int64) (string, error) {
+func (f *fakeAccountService) RevealAPIKey(ctx context.Context, accountID uint, keyID int64) (string, error) {
 	for _, key := range f.keys {
 		if key.ID == keyID {
 			return key.Key, nil
@@ -41,7 +41,7 @@ func (f *fakeChannelService) RevealAPIKey(ctx context.Context, channelID uint, k
 	return "", fmt.Errorf("key not found: %d", keyID)
 }
 
-func (f *fakeChannelService) CreateAPIKey(ctx context.Context, channelID uint, req connector.APIKeyCreateRequest) (*connector.APIKey, error) {
+func (f *fakeAccountService) CreateAPIKey(ctx context.Context, accountID uint, req connector.APIKeyCreateRequest) (*connector.APIKey, error) {
 	f.createCount++
 	f.lastCreate = req
 	key := connector.APIKey{ID: int64(len(f.keys) + 1), Name: req.Name, Key: "sk-created", GroupID: req.GroupID, ModelLimits: req.ModelLimits}
@@ -49,7 +49,7 @@ func (f *fakeChannelService) CreateAPIKey(ctx context.Context, channelID uint, r
 	return &key, nil
 }
 
-func (f *fakeChannelService) UpdateAPIKey(ctx context.Context, channelID uint, keyID int64, req connector.APIKeyUpdateRequest) (*connector.APIKey, error) {
+func (f *fakeAccountService) UpdateAPIKey(ctx context.Context, accountID uint, keyID int64, req connector.APIKeyUpdateRequest) (*connector.APIKey, error) {
 	f.updateCount++
 	f.lastUpdate = req
 	for i := range f.keys {
@@ -67,12 +67,12 @@ func (f *fakeChannelService) UpdateAPIKey(ctx context.Context, channelID uint, k
 	return nil, fmt.Errorf("key not found: %d", keyID)
 }
 
-func (f *fakeChannelService) DeleteAPIKey(ctx context.Context, channelID uint, keyID int64) error {
+func (f *fakeAccountService) DeleteAPIKey(ctx context.Context, accountID uint, keyID int64) error {
 	f.deleteCount++
 	return nil
 }
 
-func (f *fakeChannelService) ListAPIKeys(ctx context.Context, channelID uint, query connector.APIKeyQuery) (*connector.APIKeyPage, error) {
+func (f *fakeAccountService) ListAPIKeys(ctx context.Context, accountID uint, query connector.APIKeyQuery) (*connector.APIKeyPage, error) {
 	items := make([]connector.APIKey, 0, len(f.keys))
 	if query.Search != "" && f.searchMiss {
 		return &connector.APIKeyPage{Items: items, Total: 0, Page: 1, PageSize: 100}, nil
@@ -85,7 +85,7 @@ func (f *fakeChannelService) ListAPIKeys(ctx context.Context, channelID uint, qu
 	return &connector.APIKeyPage{Items: items, Total: int64(len(items)), Page: 1, PageSize: 100}, nil
 }
 
-func (f *fakeChannelService) ListAPIKeyGroups(ctx context.Context, channelID uint) ([]connector.APIKeyGroup, error) {
+func (f *fakeAccountService) ListAPIKeyGroups(ctx context.Context, accountID uint) ([]connector.APIKeyGroup, error) {
 	return f.groups, nil
 }
 
@@ -327,14 +327,15 @@ func openSyncerTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-func newTestService(t *testing.T, db *gorm.DB, fake *fakeChannelService) *Service {
+func newTestService(t *testing.T, db *gorm.DB, fake *fakeAccountService) *Service {
 	t.Helper()
 	c, err := crypto.NewCipher("test-secret")
 	if err != nil {
 		t.Fatalf("cipher: %v", err)
 	}
 	return New(
-		storage.NewChannels(db),
+		storage.NewUpstreamAccounts(db),
+		storage.NewUpstreamSites(db),
 		storage.NewRates(db),
 		c,
 		fake,
@@ -350,7 +351,7 @@ func newTestService(t *testing.T, db *gorm.DB, fake *fakeChannelService) *Servic
 
 func TestSyncAllOnRateScanSkipsDisabledTarget(t *testing.T) {
 	db := openSyncerTestDB(t)
-	svc := newTestService(t, db, &fakeChannelService{})
+	svc := newTestService(t, db, &fakeAccountService{})
 	target, err := svc.CreateTarget(context.Background(), TargetInput{
 		Name:        "target",
 		BaseURL:     "https://sub2api.example",
@@ -391,7 +392,7 @@ func TestSyncAllOnRateScanSkipsDisabledTarget(t *testing.T) {
 
 func TestSyncAllOnRateScanSkipsDisabledSyncGroupOnly(t *testing.T) {
 	db := openSyncerTestDB(t)
-	svc := newTestService(t, db, &fakeChannelService{})
+	svc := newTestService(t, db, &fakeAccountService{})
 	target, err := svc.CreateTarget(context.Background(), TargetInput{
 		Name:        "target",
 		BaseURL:     "https://sub2api.example",
@@ -434,25 +435,39 @@ func TestSyncAllOnRateScanSkipsDisabledSyncGroupOnly(t *testing.T) {
 	}
 }
 
-func seedChannel(t *testing.T, db *gorm.DB) *storage.Channel {
-	return seedChannelWithType(t, db, storage.ChannelTypeSub2API)
+func seedAccount(t *testing.T, db *gorm.DB) *storage.UpstreamAccount {
+	return seedAccountWithType(t, db, storage.UpstreamTypeSub2API)
 }
 
-func seedChannelWithType(t *testing.T, db *gorm.DB, typ storage.ChannelType) *storage.Channel {
+func seedAccountWithType(t *testing.T, db *gorm.DB, typ storage.UpstreamType) *storage.UpstreamAccount {
+	account, _ := createSourceAccount(t, db, typ, "https://source.example")
+	return account
+}
+
+func createSourceAccount(t *testing.T, db *gorm.DB, typ storage.UpstreamType, baseURL string) (*storage.UpstreamAccount, *storage.UpstreamSite) {
 	t.Helper()
-	ch := &storage.Channel{
-		Name:           "source",
-		Type:           typ,
-		SiteURL:        "https://source.example",
+	site := &storage.UpstreamSite{
+		Name:    "source-site-" + strings.TrimPrefix(baseURL, "http://"),
+		Type:    typ,
+		BaseURL: baseURL,
+	}
+	if err := storage.NewUpstreamSites(db).Create(site); err != nil {
+		t.Fatalf("create source site: %v", err)
+	}
+	account := &storage.UpstreamAccount{
+		SiteID:         site.ID,
+		Alias:          "source",
+		Username:       "source",
 		PasswordCipher: "cipher",
+		MonitorEnabled: true,
 	}
-	if err := storage.NewChannels(db).Create(ch); err != nil {
-		t.Fatalf("create channel: %v", err)
+	if err := storage.NewUpstreamAccounts(db).Create(account); err != nil {
+		t.Fatalf("create source account: %v", err)
 	}
-	return ch
+	return account, site
 }
 
-func TestListSourceModelsUsesSourceChannelKey(t *testing.T) {
+func TestListSourceModelsUsesSourceAccountKey(t *testing.T) {
 	db := openSyncerTestDB(t)
 	sourceGroupID := int64(21)
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -466,15 +481,8 @@ func TestListSourceModelsUsesSourceChannelKey(t *testing.T) {
 	}))
 	defer gateway.Close()
 
-	ch := &storage.Channel{
-		Name:    "source",
-		Type:    storage.ChannelTypeSub2API,
-		SiteURL: gateway.URL,
-	}
-	if err := storage.NewChannels(db).Create(ch); err != nil {
-		t.Fatalf("create channel: %v", err)
-	}
-	fake := &fakeChannelService{
+	ch, _ := createSourceAccount(t, db, storage.UpstreamTypeSub2API, gateway.URL)
+	fake := &fakeAccountService{
 		keys: []connector.APIKey{{
 			ID:      7,
 			Name:    "source-key",
@@ -486,7 +494,7 @@ func TestListSourceModelsUsesSourceChannelKey(t *testing.T) {
 	svc := newTestService(t, db, fake)
 
 	models, err := svc.ListSourceModels(context.Background(), SourceModelsInput{
-		ChannelID:     ch.ID,
+		AccountID:     ch.ID,
 		SourceGroupID: &sourceGroupID,
 		Platform:      "openai",
 	})
@@ -507,15 +515,8 @@ func TestListSourceModelsDoesNotFallbackToOtherGroupKey(t *testing.T) {
 	}))
 	defer gateway.Close()
 
-	ch := &storage.Channel{
-		Name:    "source",
-		Type:    storage.ChannelTypeSub2API,
-		SiteURL: gateway.URL,
-	}
-	if err := storage.NewChannels(db).Create(ch); err != nil {
-		t.Fatalf("create channel: %v", err)
-	}
-	fake := &fakeChannelService{
+	ch, _ := createSourceAccount(t, db, storage.UpstreamTypeSub2API, gateway.URL)
+	fake := &fakeAccountService{
 		keys: []connector.APIKey{{
 			ID:      7,
 			Name:    "other-group-key",
@@ -527,7 +528,7 @@ func TestListSourceModelsDoesNotFallbackToOtherGroupKey(t *testing.T) {
 	svc := newTestService(t, db, fake)
 
 	_, err := svc.ListSourceModels(context.Background(), SourceModelsInput{
-		ChannelID:     ch.ID,
+		AccountID:     ch.ID,
 		SourceGroupID: &sourceGroupID,
 		Platform:      "openai",
 	})
@@ -538,13 +539,13 @@ func TestListSourceModelsDoesNotFallbackToOtherGroupKey(t *testing.T) {
 
 func TestEnsureSourceAPIKeySetsNewAPIDefaults(t *testing.T) {
 	db := openSyncerTestDB(t)
-	ch := seedChannelWithType(t, db, storage.ChannelTypeNewAPI)
-	fake := &fakeChannelService{}
+	ch := seedAccountWithType(t, db, storage.UpstreamTypeNewAPI)
+	fake := &fakeAccountService{}
 	svc := newTestService(t, db, fake)
 
 	syncGroup := &storage.UpstreamSyncGroup{Name: "sync-1"}
 	syncAccount := &storage.UpstreamSyncAccount{
-		SourceChannelID: ch.ID,
+		SourceAccountID: ch.ID,
 		SourceGroupName: "Codex Plus",
 	}
 
@@ -571,8 +572,8 @@ func TestEnsureSourceAPIKeySetsNewAPIDefaults(t *testing.T) {
 
 func TestEnsureSourceAPIKeyFallsBackToFullListWhenSearchMisses(t *testing.T) {
 	db := openSyncerTestDB(t)
-	ch := seedChannelWithType(t, db, storage.ChannelTypeNewAPI)
-	fake := &fakeChannelService{
+	ch := seedAccountWithType(t, db, storage.UpstreamTypeNewAPI)
+	fake := &fakeAccountService{
 		searchMiss: true,
 		keys: []connector.APIKey{{
 			ID:   1864,
@@ -584,7 +585,7 @@ func TestEnsureSourceAPIKeyFallsBackToFullListWhenSearchMisses(t *testing.T) {
 
 	syncGroup := &storage.UpstreamSyncGroup{Name: "Plus-4"}
 	syncAccount := &storage.UpstreamSyncAccount{
-		SourceChannelID: ch.ID,
+		SourceAccountID: ch.ID,
 		SourceGroupName: "Codex Plus",
 	}
 
@@ -604,10 +605,10 @@ func TestApplySyncGroupCreatesThenUpdatesManagedAccount(t *testing.T) {
 	srv, admin := newAdminServer(t)
 	defer srv.Close()
 	db := openSyncerTestDB(t)
-	ch := seedChannel(t, db)
+	ch := seedAccount(t, db)
 	sourceGroupID := int64(1)
 	lowerSourceGroupID := int64(2)
-	fake := &fakeChannelService{
+	fake := &fakeAccountService{
 		groups: []connector.APIKeyGroup{
 			{ID: &lowerSourceGroupID, Name: "source-lower", Ratio: 0.01},
 			{ID: &sourceGroupID, Name: "source-low", Ratio: 0.06},
@@ -624,14 +625,14 @@ func TestApplySyncGroupCreatesThenUpdatesManagedAccount(t *testing.T) {
 		t.Fatalf("sync groups: %v", err)
 	}
 	rule, err := svc.CreateSyncGroup(SyncGroupDTO{
-		NameTemplate:    "sync-{同步分组ID}-{渠道ID}-{源分组ID}",
+		NameTemplate:    "sync-{同步分组ID}-{账号ID}-{源分组ID}",
 		TargetID:        target.ID,
 		TargetGroupIDs:  []uint{groups[0].ID},
 		Platform:        "openai",
 		ModelLimitsMode: "custom",
 		ModelLimits:     "gpt-4o\nclaude-3",
 		Accounts: []SyncAccountDTO{{
-			SourceChannelID:  ch.ID,
+			SourceAccountID:  ch.ID,
 			SourceGroupID:    &sourceGroupID,
 			Concurrency:      2,
 			Weight:           50,
@@ -705,7 +706,7 @@ func TestApplySyncGroupCreatesThenUpdatesManagedAccount(t *testing.T) {
 		t.Fatalf("load factor = %#v, want 50", account["load_factor"])
 	}
 	credentials := account["credentials"].(map[string]any)
-	if credentials["api_key"] != "sk-created" || credentials["base_url"] != ch.SiteURL {
+	if credentials["api_key"] != "sk-created" || credentials["base_url"] != "https://source.example" {
 		t.Fatalf("credentials = %#v", credentials)
 	}
 	modelMapping := credentials["model_mapping"].(map[string]any)
@@ -718,9 +719,9 @@ func TestApplySyncGroupRestoresSchedulableAfterReEnableAccount(t *testing.T) {
 	srv, admin := newAdminServer(t)
 	defer srv.Close()
 	db := openSyncerTestDB(t)
-	ch := seedChannel(t, db)
+	ch := seedAccount(t, db)
 	sourceGroupID := int64(1)
-	fake := &fakeChannelService{
+	fake := &fakeAccountService{
 		groups: []connector.APIKeyGroup{{ID: &sourceGroupID, Name: "source-low", Ratio: 0.06}},
 	}
 	svc := newTestService(t, db, fake)
@@ -739,7 +740,7 @@ func TestApplySyncGroupRestoresSchedulableAfterReEnableAccount(t *testing.T) {
 		TargetGroupIDs: []uint{groups[0].ID},
 		Platform:       "openai",
 		Accounts: []SyncAccountDTO{{
-			SourceChannelID:  ch.ID,
+			SourceAccountID:  ch.ID,
 			SourceGroupID:    &sourceGroupID,
 			RateConvertMode:  "raw",
 			RateConvertValue: 1,
@@ -793,9 +794,9 @@ func TestApplySyncGroupSyncsTargetModelsFromUpstream(t *testing.T) {
 	srv, admin := newAdminServer(t)
 	defer srv.Close()
 	db := openSyncerTestDB(t)
-	ch := seedChannel(t, db)
+	ch := seedAccount(t, db)
 	sourceGroupID := int64(1)
-	fake := &fakeChannelService{
+	fake := &fakeAccountService{
 		groups: []connector.APIKeyGroup{{ID: &sourceGroupID, Name: "source-low", Ratio: 0.06}},
 	}
 	svc := newTestService(t, db, fake)
@@ -816,7 +817,7 @@ func TestApplySyncGroupSyncsTargetModelsFromUpstream(t *testing.T) {
 		ModelLimitsMode: "sync_upstream",
 		ModelLimits:     "should-be-cleared",
 		Accounts: []SyncAccountDTO{{
-			SourceChannelID:  ch.ID,
+			SourceAccountID:  ch.ID,
 			SourceGroupID:    &sourceGroupID,
 			RateConvertMode:  "raw",
 			RateConvertValue: 1,
@@ -865,9 +866,9 @@ func TestApplySyncGroupTestsSelectedTargetModel(t *testing.T) {
 	srv, admin := newAdminServer(t)
 	defer srv.Close()
 	db := openSyncerTestDB(t)
-	ch := seedChannel(t, db)
+	ch := seedAccount(t, db)
 	sourceGroupID := int64(1)
-	fake := &fakeChannelService{
+	fake := &fakeAccountService{
 		groups: []connector.APIKeyGroup{{ID: &sourceGroupID, Name: "source-low", Ratio: 0.06}},
 	}
 	svc := newTestService(t, db, fake)
@@ -886,7 +887,7 @@ func TestApplySyncGroupTestsSelectedTargetModel(t *testing.T) {
 		TargetGroupIDs: []uint{groups[0].ID},
 		Platform:       "openai",
 		Accounts: []SyncAccountDTO{{
-			SourceChannelID:  ch.ID,
+			SourceAccountID:  ch.ID,
 			SourceGroupID:    &sourceGroupID,
 			RateConvertMode:  "raw",
 			RateConvertValue: 1,
@@ -926,9 +927,9 @@ func TestApplySyncGroupDisablesSchedulableWhenTestFails(t *testing.T) {
 	defer srv.Close()
 	admin.failTests = map[int64]string{10: "upstream unavailable"}
 	db := openSyncerTestDB(t)
-	ch := seedChannel(t, db)
+	ch := seedAccount(t, db)
 	sourceGroupID := int64(1)
-	fake := &fakeChannelService{
+	fake := &fakeAccountService{
 		groups: []connector.APIKeyGroup{{ID: &sourceGroupID, Name: "source-low", Ratio: 0.06}},
 	}
 	svc := newTestService(t, db, fake)
@@ -947,7 +948,7 @@ func TestApplySyncGroupDisablesSchedulableWhenTestFails(t *testing.T) {
 		TargetGroupIDs: []uint{groups[0].ID},
 		Platform:       "openai",
 		Accounts: []SyncAccountDTO{{
-			SourceChannelID:  ch.ID,
+			SourceAccountID:  ch.ID,
 			SourceGroupID:    &sourceGroupID,
 			RateConvertMode:  "raw",
 			RateConvertValue: 1,
@@ -990,9 +991,9 @@ func TestApplySyncGroupNotifiesWhenTestRestoresSchedulable(t *testing.T) {
 	defer webhook.Close()
 
 	db := openSyncerTestDB(t)
-	ch := seedChannel(t, db)
+	ch := seedAccount(t, db)
 	sourceGroupID := int64(1)
-	fake := &fakeChannelService{
+	fake := &fakeAccountService{
 		groups: []connector.APIKeyGroup{{ID: &sourceGroupID, Name: "source-low", Ratio: 0.06}},
 	}
 	svc := newTestService(t, db, fake)
@@ -1037,7 +1038,7 @@ func TestApplySyncGroupNotifiesWhenTestRestoresSchedulable(t *testing.T) {
 		TargetGroupIDs: []uint{groups[0].ID},
 		Platform:       "openai",
 		Accounts: []SyncAccountDTO{{
-			SourceChannelID:  ch.ID,
+			SourceAccountID:  ch.ID,
 			SourceGroupID:    &sourceGroupID,
 			RateConvertMode:  "raw",
 			RateConvertValue: 1,
@@ -1090,10 +1091,10 @@ func TestApplySyncGroupSkipsFailedModelSyncAndDisablesRemoteAccount(t *testing.T
 	defer srv.Close()
 	admin.failSyncModels = map[int64]bool{10: true}
 	db := openSyncerTestDB(t)
-	ch := seedChannel(t, db)
+	ch := seedAccount(t, db)
 	sourceGroupID := int64(1)
 	otherGroupID := int64(2)
-	fake := &fakeChannelService{
+	fake := &fakeAccountService{
 		groups: []connector.APIKeyGroup{
 			{ID: &sourceGroupID, Name: "source-low", Ratio: 0.06},
 			{ID: &otherGroupID, Name: "source-other", Ratio: 0.01},
@@ -1117,14 +1118,14 @@ func TestApplySyncGroupSkipsFailedModelSyncAndDisablesRemoteAccount(t *testing.T
 		ModelLimitsMode: "sync_upstream",
 		Accounts: []SyncAccountDTO{
 			{
-				SourceChannelID:  ch.ID,
+				SourceAccountID:  ch.ID,
 				SourceGroupID:    &sourceGroupID,
 				RateConvertMode:  "raw",
 				RateConvertValue: 1,
 				Enabled:          true,
 			},
 			{
-				SourceChannelID:  ch.ID,
+				SourceAccountID:  ch.ID,
 				SourceGroupID:    &otherGroupID,
 				RateConvertMode:  "raw",
 				RateConvertValue: 1,
@@ -1177,10 +1178,10 @@ func TestApplySyncGroupCreatesAccountsForMultipleAccounts(t *testing.T) {
 	srv, admin := newAdminServer(t)
 	defer srv.Close()
 	db := openSyncerTestDB(t)
-	ch := seedChannel(t, db)
+	ch := seedAccount(t, db)
 	sourceGroupID := int64(1)
 	otherGroupID := int64(2)
-	fake := &fakeChannelService{
+	fake := &fakeAccountService{
 		groups: []connector.APIKeyGroup{
 			{ID: &sourceGroupID, Name: "source-low", Ratio: 0.06},
 			{ID: &otherGroupID, Name: "source-other", Ratio: 0.01},
@@ -1203,7 +1204,7 @@ func TestApplySyncGroupCreatesAccountsForMultipleAccounts(t *testing.T) {
 		Platform:       "openai",
 		Accounts: []SyncAccountDTO{
 			{
-				SourceChannelID:  ch.ID,
+				SourceAccountID:  ch.ID,
 				SourceGroupID:    &sourceGroupID,
 				RateConvertMode:  "raw",
 				RateConvertValue: 1,
@@ -1212,7 +1213,7 @@ func TestApplySyncGroupCreatesAccountsForMultipleAccounts(t *testing.T) {
 				Enabled:          true,
 			},
 			{
-				SourceChannelID:  ch.ID,
+				SourceAccountID:  ch.ID,
 				SourceGroupID:    &otherGroupID,
 				RateConvertMode:  "multiply_100",
 				RateConvertValue: 1,
@@ -1259,10 +1260,10 @@ func TestApplySyncGroupResortsAccountsByLatestSourceGroupRate(t *testing.T) {
 	srv, admin := newAdminServer(t)
 	defer srv.Close()
 	db := openSyncerTestDB(t)
-	ch := seedChannel(t, db)
+	ch := seedAccount(t, db)
 	firstGroupID := int64(1)
 	secondGroupID := int64(2)
-	fake := &fakeChannelService{
+	fake := &fakeAccountService{
 		groups: []connector.APIKeyGroup{
 			{ID: &firstGroupID, Name: "source-1", Ratio: 0.2},
 			{ID: &secondGroupID, Name: "source-2", Ratio: 0.3},
@@ -1286,7 +1287,7 @@ func TestApplySyncGroupResortsAccountsByLatestSourceGroupRate(t *testing.T) {
 		RateSortDirection: "asc",
 		Accounts: []SyncAccountDTO{
 			{
-				SourceChannelID:  ch.ID,
+				SourceAccountID:  ch.ID,
 				SourceGroupID:    &firstGroupID,
 				RateConvertMode:  "raw",
 				RateConvertValue: 1,
@@ -1294,7 +1295,7 @@ func TestApplySyncGroupResortsAccountsByLatestSourceGroupRate(t *testing.T) {
 				Enabled:          true,
 			},
 			{
-				SourceChannelID:  ch.ID,
+				SourceAccountID:  ch.ID,
 				SourceGroupID:    &secondGroupID,
 				RateConvertMode:  "raw",
 				RateConvertValue: 1,
@@ -1339,11 +1340,11 @@ func TestApplySyncGroupKeepsMissingSourceGroupAccountSlot(t *testing.T) {
 	srv, admin := newAdminServer(t)
 	defer srv.Close()
 	db := openSyncerTestDB(t)
-	ch := seedChannel(t, db)
+	ch := seedAccount(t, db)
 	firstGroupID := int64(1)
 	secondGroupID := int64(2)
 	thirdGroupID := int64(3)
-	fake := &fakeChannelService{
+	fake := &fakeAccountService{
 		groups: []connector.APIKeyGroup{
 			{ID: &firstGroupID, Name: "source-1", Ratio: 0.1},
 			{ID: &secondGroupID, Name: "source-2", Ratio: 0.2},
@@ -1367,9 +1368,9 @@ func TestApplySyncGroupKeepsMissingSourceGroupAccountSlot(t *testing.T) {
 		Platform:          "openai",
 		RateSortDirection: "asc",
 		Accounts: []SyncAccountDTO{
-			{SourceChannelID: ch.ID, SourceGroupID: &firstGroupID, RateConvertMode: "raw", RateConvertValue: 1, Enabled: true},
-			{SourceChannelID: ch.ID, SourceGroupID: &secondGroupID, RateConvertMode: "raw", RateConvertValue: 1, Enabled: true},
-			{SourceChannelID: ch.ID, SourceGroupID: &thirdGroupID, RateConvertMode: "raw", RateConvertValue: 1, Enabled: true},
+			{SourceAccountID: ch.ID, SourceGroupID: &firstGroupID, RateConvertMode: "raw", RateConvertValue: 1, Enabled: true},
+			{SourceAccountID: ch.ID, SourceGroupID: &secondGroupID, RateConvertMode: "raw", RateConvertValue: 1, Enabled: true},
+			{SourceAccountID: ch.ID, SourceGroupID: &thirdGroupID, RateConvertMode: "raw", RateConvertValue: 1, Enabled: true},
 		},
 	})
 	if err != nil {
@@ -1415,9 +1416,9 @@ func TestApplySyncGroupRecreatesMissingMappedRemoteAccount(t *testing.T) {
 	srv, admin := newAdminServer(t)
 	defer srv.Close()
 	db := openSyncerTestDB(t)
-	ch := seedChannel(t, db)
+	ch := seedAccount(t, db)
 	sourceGroupID := int64(1)
-	fake := &fakeChannelService{
+	fake := &fakeAccountService{
 		groups: []connector.APIKeyGroup{{ID: &sourceGroupID, Name: "source-low", Ratio: 0.06}},
 	}
 	svc := newTestService(t, db, fake)
@@ -1436,7 +1437,7 @@ func TestApplySyncGroupRecreatesMissingMappedRemoteAccount(t *testing.T) {
 		TargetGroupIDs: []uint{groups[0].ID},
 		Platform:       "openai",
 		Accounts: []SyncAccountDTO{{
-			SourceChannelID:  ch.ID,
+			SourceAccountID:  ch.ID,
 			SourceGroupID:    &sourceGroupID,
 			RateConvertMode:  "raw",
 			RateConvertValue: 1,
@@ -1473,11 +1474,11 @@ func TestApplySyncGroupDeletesRemoteAccountWhenLocalAccountRemoved(t *testing.T)
 	srv, admin := newAdminServer(t)
 	defer srv.Close()
 	db := openSyncerTestDB(t)
-	ch := seedChannel(t, db)
+	ch := seedAccount(t, db)
 	sourceGroupID := int64(1)
 	otherGroupID := int64(2)
 	thirdGroupID := int64(3)
-	fake := &fakeChannelService{
+	fake := &fakeAccountService{
 		groups: []connector.APIKeyGroup{
 			{ID: &sourceGroupID, Name: "source-low", Ratio: 0.06},
 			{ID: &otherGroupID, Name: "source-other", Ratio: 0.01},
@@ -1501,21 +1502,21 @@ func TestApplySyncGroupDeletesRemoteAccountWhenLocalAccountRemoved(t *testing.T)
 		Platform:       "openai",
 		Accounts: []SyncAccountDTO{
 			{
-				SourceChannelID:  ch.ID,
+				SourceAccountID:  ch.ID,
 				SourceGroupID:    &sourceGroupID,
 				RateConvertMode:  "raw",
 				RateConvertValue: 1,
 				Enabled:          true,
 			},
 			{
-				SourceChannelID:  ch.ID,
+				SourceAccountID:  ch.ID,
 				SourceGroupID:    &otherGroupID,
 				RateConvertMode:  "raw",
 				RateConvertValue: 1,
 				Enabled:          true,
 			},
 			{
-				SourceChannelID:  ch.ID,
+				SourceAccountID:  ch.ID,
 				SourceGroupID:    &thirdGroupID,
 				RateConvertMode:  "raw",
 				RateConvertValue: 1,
@@ -1570,9 +1571,9 @@ func TestApplySyncGroupDeletesUnmanagedRemoteDuplicate(t *testing.T) {
 	srv, admin := newAdminServer(t)
 	defer srv.Close()
 	db := openSyncerTestDB(t)
-	ch := seedChannel(t, db)
+	ch := seedAccount(t, db)
 	sourceGroupID := int64(1)
-	fake := &fakeChannelService{
+	fake := &fakeAccountService{
 		groups: []connector.APIKeyGroup{{ID: &sourceGroupID, Name: "source-low", Ratio: 0.06}},
 	}
 	svc := newTestService(t, db, fake)
@@ -1591,7 +1592,7 @@ func TestApplySyncGroupDeletesUnmanagedRemoteDuplicate(t *testing.T) {
 		TargetGroupIDs: []uint{groups[0].ID},
 		Platform:       "openai",
 		Accounts: []SyncAccountDTO{{
-			SourceChannelID:  ch.ID,
+			SourceAccountID:  ch.ID,
 			SourceGroupID:    &sourceGroupID,
 			RateConvertMode:  "raw",
 			RateConvertValue: 1,
@@ -1624,9 +1625,9 @@ func TestApplySyncGroupBlocksWhenSourceGroupMissing(t *testing.T) {
 	srv, admin := newAdminServer(t)
 	defer srv.Close()
 	db := openSyncerTestDB(t)
-	ch := seedChannel(t, db)
+	ch := seedAccount(t, db)
 	missingGroupID := int64(999)
-	fake := &fakeChannelService{
+	fake := &fakeAccountService{
 		groups: []connector.APIKeyGroup{{Name: "other", Ratio: 1}},
 	}
 	svc := newTestService(t, db, fake)
@@ -1645,7 +1646,7 @@ func TestApplySyncGroupBlocksWhenSourceGroupMissing(t *testing.T) {
 		TargetGroupIDs: []uint{groups[0].ID},
 		Platform:       "openai",
 		Accounts: []SyncAccountDTO{{
-			SourceChannelID:  ch.ID,
+			SourceAccountID:  ch.ID,
 			SourceGroupID:    &missingGroupID,
 			RateConvertMode:  "raw",
 			RateConvertValue: 1,
@@ -1694,8 +1695,8 @@ func TestApplySyncGroupCreatesDisabledPlaceholderWhenSourceGroupNotBound(t *test
 	srv, admin := newAdminServer(t)
 	defer srv.Close()
 	db := openSyncerTestDB(t)
-	ch := seedChannel(t, db)
-	fake := &fakeChannelService{}
+	ch := seedAccount(t, db)
+	fake := &fakeAccountService{}
 	svc := newTestService(t, db, fake)
 
 	target, err := svc.CreateTarget(context.Background(), TargetInput{Name: "target", BaseURL: srv.URL, AdminAPIKey: "admin-key", Enabled: true})
@@ -1712,7 +1713,7 @@ func TestApplySyncGroupCreatesDisabledPlaceholderWhenSourceGroupNotBound(t *test
 		TargetGroupIDs: []uint{groups[0].ID},
 		Platform:       "openai",
 		Accounts: []SyncAccountDTO{{
-			SourceChannelID:  ch.ID,
+			SourceAccountID:  ch.ID,
 			RateConvertMode:  "raw",
 			RateConvertValue: 1,
 			Enabled:          true,
@@ -1759,9 +1760,9 @@ func TestApplySyncGroupDisablesManagedAccountWhenSourceGroupUnbound(t *testing.T
 	srv, admin := newAdminServer(t)
 	defer srv.Close()
 	db := openSyncerTestDB(t)
-	ch := seedChannel(t, db)
+	ch := seedAccount(t, db)
 	sourceGroupID := int64(1)
-	fake := &fakeChannelService{
+	fake := &fakeAccountService{
 		groups: []connector.APIKeyGroup{{ID: &sourceGroupID, Name: "source-low", Ratio: 0.06}},
 	}
 	svc := newTestService(t, db, fake)
@@ -1780,7 +1781,7 @@ func TestApplySyncGroupDisablesManagedAccountWhenSourceGroupUnbound(t *testing.T
 		TargetGroupIDs: []uint{groups[0].ID},
 		Platform:       "openai",
 		Accounts: []SyncAccountDTO{{
-			SourceChannelID:  ch.ID,
+			SourceAccountID:  ch.ID,
 			SourceGroupID:    &sourceGroupID,
 			RateConvertMode:  "raw",
 			RateConvertValue: 1,
@@ -1860,13 +1861,13 @@ func TestApplySyncGroupDisablesManagedAccountWhenSourceGroupUnbound(t *testing.T
 	}
 }
 
-func TestApplySyncGroupDisablesManagedAccountWhenSourceChannelDeleted(t *testing.T) {
-	srv, admin := newAdminServer(t)
+func TestApplySyncGroupDisablesManagedAccountWhenSourceAccountDeleted(t *testing.T) {
+	srv, _ := newAdminServer(t)
 	defer srv.Close()
 	db := openSyncerTestDB(t)
-	ch := seedChannel(t, db)
+	ch := seedAccount(t, db)
 	sourceGroupID := int64(1)
-	fake := &fakeChannelService{
+	fake := &fakeAccountService{
 		groups: []connector.APIKeyGroup{{ID: &sourceGroupID, Name: "source-low", Ratio: 0.06}},
 	}
 	svc := newTestService(t, db, fake)
@@ -1880,12 +1881,12 @@ func TestApplySyncGroupDisablesManagedAccountWhenSourceChannelDeleted(t *testing
 		t.Fatalf("sync groups: %v", err)
 	}
 	rule, err := svc.CreateSyncGroup(SyncGroupDTO{
-		NameTemplate:   "deleted-channel-{同步分组ID}",
+		NameTemplate:   "deleted-account-{同步分组ID}",
 		TargetID:       target.ID,
 		TargetGroupIDs: []uint{groups[0].ID},
 		Platform:       "openai",
 		Accounts: []SyncAccountDTO{{
-			SourceChannelID:  ch.ID,
+			SourceAccountID:  ch.ID,
 			SourceGroupID:    &sourceGroupID,
 			RateConvertMode:  "raw",
 			RateConvertValue: 1,
@@ -1898,48 +1899,66 @@ func TestApplySyncGroupDisablesManagedAccountWhenSourceChannelDeleted(t *testing
 	if _, err := svc.ApplySyncGroup(context.Background(), rule.ID); err != nil {
 		t.Fatalf("first apply: %v", err)
 	}
-	if err := storage.NewChannels(db).Delete(ch.ID); err != nil {
-		t.Fatalf("delete channel: %v", err)
+	backup := &storage.UpstreamAccount{
+		SiteID:         ch.SiteID,
+		Alias:          "available-backup",
+		Username:       "backup",
+		PasswordCipher: "cipher",
+		MonitorEnabled: true,
+	}
+	if err := storage.NewUpstreamSites(db).AddAccount(backup); err != nil {
+		t.Fatalf("create same-site backup account: %v", err)
+	}
+	if err := storage.NewUpstreamSites(db).DeleteAccount(ch.ID, backup.ID); err != nil {
+		t.Fatalf("delete source account: %v", err)
 	}
 
 	log, err := svc.ApplySyncGroup(context.Background(), rule.ID)
 	if err != nil {
 		t.Fatalf("second apply: %v", err)
 	}
-	if log.Success || !strings.Contains(log.Message, "source channel missing") {
+	if log.Success || log.Message != "no sync accounts" {
 		t.Fatalf("log = %#v", log)
-	}
-	if !strings.Contains(log.Message, "已自动禁用") || !strings.Contains(log.Message, "source channel missing") {
-		t.Fatalf("log missing disable change = %#v", log.Message)
-	}
-	if len(admin.deleteAccounts) != 0 {
-		t.Fatalf("deleted accounts = %#v, want none", admin.deleteAccounts)
-	}
-	if admin.accounts[10]["status"] != "inactive" {
-		t.Fatalf("remote account status = %#v, want inactive", admin.accounts[10]["status"])
-	}
-	if admin.accounts[10]["schedulable"] != false {
-		t.Fatalf("remote account schedulable = %#v, want false", admin.accounts[10]["schedulable"])
-	}
-	if !strings.Contains(fmt.Sprint(admin.accounts[10]["notes"]), "source channel missing") {
-		t.Fatalf("remote account notes = %#v", admin.accounts[10]["notes"])
-	}
-	if !strings.Contains(fmt.Sprint(admin.accounts[10]["notes"]), "同步时间：") {
-		t.Fatalf("remote account notes missing sync time = %#v", admin.accounts[10]["notes"])
 	}
 	managed, err := storage.NewUpstreamSyncManagedAccounts(db).ListBySyncGroupID(rule.ID)
 	if err != nil {
 		t.Fatalf("list managed accounts: %v", err)
 	}
-	if len(managed) != 1 || managed[0].TargetAccountID != 10 {
+	if len(managed) != 0 {
 		t.Fatalf("managed accounts = %#v", managed)
 	}
 	accounts, err := storage.NewUpstreamSyncAccounts(db).ListBySyncGroupID(rule.ID)
 	if err != nil {
 		t.Fatalf("list sync accounts: %v", err)
 	}
-	if len(accounts) != 1 || !accounts[0].Enabled {
+	if len(accounts) != 0 {
 		t.Fatalf("sync accounts = %#v", accounts)
+	}
+}
+
+func TestValidateSourceAccountsRequiresMatchingEnabledAccount(t *testing.T) {
+	db := openSyncerTestDB(t)
+	ch := seedAccount(t, db)
+	svc := newTestService(t, db, &fakeAccountService{})
+
+	accounts := []storage.UpstreamSyncAccount{{SourceAccountID: ch.ID, Enabled: true}}
+	if err := svc.validateSourceAccounts(accounts); err != nil {
+		t.Fatalf("validate source account: %v", err)
+	}
+	if accounts[0].SourceSiteID != ch.SiteID {
+		t.Fatalf("source site backfill = %d, want %d", accounts[0].SourceSiteID, ch.SiteID)
+	}
+
+	accounts[0].SourceSiteID = ch.SiteID + 100
+	if err := svc.validateSourceAccounts(accounts); err == nil || !strings.Contains(err.Error(), "不属于所选站点") {
+		t.Fatalf("site mismatch error = %v", err)
+	}
+	if err := db.Model(&storage.UpstreamAccount{}).Where("id = ?", ch.ID).Update("monitor_enabled", false).Error; err != nil {
+		t.Fatalf("disable source account: %v", err)
+	}
+	accounts[0].SourceSiteID = ch.SiteID
+	if err := svc.validateSourceAccounts(accounts); err == nil || !strings.Contains(err.Error(), "已禁用") {
+		t.Fatalf("disabled source account error = %v", err)
 	}
 }
 
@@ -1958,10 +1977,10 @@ func TestApplySyncGroupDispatchesFailureNotificationWithDisabledPlaceholder(t *t
 	defer webhook.Close()
 
 	db := openSyncerTestDB(t)
-	ch := seedChannel(t, db)
+	ch := seedAccount(t, db)
 	otherGroupID := int64(1)
 	missingGroupID := int64(999)
-	fake := &fakeChannelService{
+	fake := &fakeAccountService{
 		groups: []connector.APIKeyGroup{{ID: &otherGroupID, Name: "other", Ratio: 1}},
 	}
 	svc := newTestService(t, db, fake)
@@ -1981,7 +2000,7 @@ func TestApplySyncGroupDispatchesFailureNotificationWithDisabledPlaceholder(t *t
 		TargetGroupIDs: []uint{groups[0].ID},
 		Platform:       "openai",
 		Accounts: []SyncAccountDTO{{
-			SourceChannelID:  ch.ID,
+			SourceAccountID:  ch.ID,
 			SourceGroupID:    &missingGroupID,
 			RateConvertMode:  "raw",
 			RateConvertValue: 1,
@@ -2046,9 +2065,9 @@ func TestDeleteManagedDeletesRemoteAccountAndSourceKeyOnly(t *testing.T) {
 	srv, admin := newAdminServer(t)
 	defer srv.Close()
 	db := openSyncerTestDB(t)
-	ch := seedChannel(t, db)
+	ch := seedAccount(t, db)
 	sourceGroupID := int64(1)
-	fake := &fakeChannelService{
+	fake := &fakeAccountService{
 		groups: []connector.APIKeyGroup{{ID: &sourceGroupID, Name: "source-low", Ratio: 0.06}},
 	}
 	svc := newTestService(t, db, fake)
@@ -2067,7 +2086,7 @@ func TestDeleteManagedDeletesRemoteAccountAndSourceKeyOnly(t *testing.T) {
 		TargetGroupIDs: []uint{groups[0].ID},
 		Platform:       "openai",
 		Accounts: []SyncAccountDTO{{
-			SourceChannelID:  ch.ID,
+			SourceAccountID:  ch.ID,
 			SourceGroupID:    &sourceGroupID,
 			RateConvertMode:  "raw",
 			RateConvertValue: 1,
@@ -2111,7 +2130,7 @@ func TestSyncTargetGroupsDeletesLocalGroupsWhenRemoteIsEmpty(t *testing.T) {
 	srv, admin := newAdminServer(t)
 	defer srv.Close()
 	db := openSyncerTestDB(t)
-	fake := &fakeChannelService{}
+	fake := &fakeAccountService{}
 	svc := newTestService(t, db, fake)
 
 	target, err := svc.CreateTarget(context.Background(), TargetInput{Name: "target", BaseURL: srv.URL, AdminAPIKey: "admin-key", Enabled: true})
@@ -2147,9 +2166,9 @@ func TestUpdateSyncGroupDoesNotChangePlatform(t *testing.T) {
 	srv, _ := newAdminServer(t)
 	defer srv.Close()
 	db := openSyncerTestDB(t)
-	ch := seedChannel(t, db)
+	ch := seedAccount(t, db)
 	sourceGroupID := int64(1)
-	fake := &fakeChannelService{
+	fake := &fakeAccountService{
 		groups: []connector.APIKeyGroup{{ID: &sourceGroupID, Name: "source-low", Ratio: 0.06}},
 	}
 	svc := newTestService(t, db, fake)
@@ -2168,7 +2187,7 @@ func TestUpdateSyncGroupDoesNotChangePlatform(t *testing.T) {
 		TargetGroupIDs: []uint{groups[0].ID},
 		Platform:       "openai",
 		Accounts: []SyncAccountDTO{{
-			SourceChannelID:  ch.ID,
+			SourceAccountID:  ch.ID,
 			SourceGroupID:    &sourceGroupID,
 			RateConvertMode:  "raw",
 			RateConvertValue: 1,
@@ -2201,7 +2220,7 @@ func TestSyncGroupChangeDispatchesNotification(t *testing.T) {
 	defer webhook.Close()
 
 	db := openSyncerTestDB(t)
-	fake := &fakeChannelService{}
+	fake := &fakeAccountService{}
 	svc := newTestService(t, db, fake)
 	target, err := svc.CreateTarget(context.Background(), TargetInput{Name: "target", BaseURL: webhook.URL, AdminAPIKey: "admin-key", Enabled: true})
 	if err != nil {

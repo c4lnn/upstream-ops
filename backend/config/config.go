@@ -83,10 +83,24 @@ type AuthConfig struct {
 }
 
 type SchedulerConfig struct {
-	BalanceCron string          `mapstructure:"balanceCron" yaml:"balanceCron" json:"balanceCron"`
-	RateCron    string          `mapstructure:"rateCron" yaml:"rateCron" json:"rateCron"`
-	Concurrency int             `mapstructure:"concurrency" yaml:"concurrency" json:"concurrency"`
-	Retention   RetentionConfig `mapstructure:"retention" yaml:"retention" json:"retention"`
+	BalanceCron           string          `mapstructure:"balanceCron" yaml:"balanceCron" json:"balanceCron"`
+	RateCron              string          `mapstructure:"rateCron" yaml:"rateCron" json:"rateCron"`
+	BalanceTimeoutSeconds int             `mapstructure:"balanceTimeoutSeconds" yaml:"balanceTimeoutSeconds" json:"balanceTimeoutSeconds"`
+	RateTimeoutSeconds    int             `mapstructure:"rateTimeoutSeconds" yaml:"rateTimeoutSeconds" json:"rateTimeoutSeconds"`
+	Concurrency           int             `mapstructure:"concurrency" yaml:"concurrency" json:"concurrency"`
+	Retention             RetentionConfig `mapstructure:"retention" yaml:"retention" json:"retention"`
+}
+
+const DefaultSchedulerTaskTimeoutSeconds = 300
+
+func (s SchedulerConfig) WithDefaults() SchedulerConfig {
+	if s.BalanceTimeoutSeconds <= 0 {
+		s.BalanceTimeoutSeconds = DefaultSchedulerTaskTimeoutSeconds
+	}
+	if s.RateTimeoutSeconds <= 0 {
+		s.RateTimeoutSeconds = DefaultSchedulerTaskTimeoutSeconds
+	}
+	return s
 }
 
 // RetentionConfig 历史数据保留策略。
@@ -239,6 +253,7 @@ func load(path string, withEnv bool) (*Config, string, error) {
 	if err := v.Unmarshal(cfg); err != nil {
 		return nil, "", fmt.Errorf("unmarshal config: %w", err)
 	}
+	cfg.Scheduler = cfg.Scheduler.WithDefaults()
 	cfg.Upstream = cfg.Upstream.WithDefaults()
 	return cfg, v.ConfigFileUsed(), nil
 }
@@ -305,6 +320,8 @@ func setDefaults(v *viper.Viper) {
 	// CLAUDE.md 默认建议：余额 15 分钟，倍率 30 分钟。
 	v.SetDefault("scheduler.balanceCron", "37 */15 * * * *")
 	v.SetDefault("scheduler.rateCron", "13 */30 * * * *")
+	v.SetDefault("scheduler.balanceTimeoutSeconds", DefaultSchedulerTaskTimeoutSeconds)
+	v.SetDefault("scheduler.rateTimeoutSeconds", DefaultSchedulerTaskTimeoutSeconds)
 	v.SetDefault("scheduler.concurrency", 4)
 
 	// 历史清理：每天凌晨 3:17 跑一次（6 字段 cron 含秒），

@@ -60,8 +60,8 @@ type newapiResp struct {
 	Data    json.RawMessage `json:"data"`
 }
 
-func (c *Client) GetTurnstileSiteKey(ctx context.Context, ch *connector.Channel) (string, error) {
-	body, err := c.getJSON(ctx, strings.TrimRight(ch.SiteURL, "/")+"/api/status", nil)
+func (c *Client) GetTurnstileSiteKey(ctx context.Context, ch *connector.AccountTarget) (string, error) {
+	body, err := c.getJSON(ctx, strings.TrimRight(ch.BaseURL, "/")+"/api/status", nil)
 	if err != nil {
 		return "", fmt.Errorf("newapi status: %w", err)
 	}
@@ -78,8 +78,8 @@ func (c *Client) GetTurnstileSiteKey(ctx context.Context, ch *connector.Channel)
 	return status.TurnstileSiteKey, nil
 }
 
-func (c *Client) Login(ctx context.Context, ch *connector.Channel) (*connector.AuthSession, error) {
-	site := strings.TrimRight(ch.SiteURL, "/")
+func (c *Client) Login(ctx context.Context, ch *connector.AccountTarget) (*connector.AuthSession, error) {
+	site := strings.TrimRight(ch.BaseURL, "/")
 	body := map[string]any{
 		"username": ch.Username,
 		"password": ch.Password,
@@ -135,11 +135,11 @@ func (c *Client) Login(ctx context.Context, ch *connector.Channel) (*connector.A
 	}, nil
 }
 
-func (c *Client) CheckAuth(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) error {
+func (c *Client) CheckAuth(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) error {
 	if session == nil || !newAPIHasAuth(session) {
 		return errors.New("missing newapi credential: 需要提供 Cookie 或系统访问令牌")
 	}
-	_, err := c.getJSON(ctx, strings.TrimRight(ch.SiteURL, "/")+"/api/user/self", session)
+	_, err := c.getJSON(ctx, strings.TrimRight(ch.BaseURL, "/")+"/api/user/self", session)
 	return err
 }
 
@@ -175,8 +175,8 @@ func applyNewAPIAuth(req *resty.Request, session *connector.AuthSession) {
 	}
 }
 
-func (c *Client) GetBalance(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) (*connector.BalanceResult, error) {
-	site := strings.TrimRight(ch.SiteURL, "/")
+func (c *Client) GetBalance(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) (*connector.BalanceResult, error) {
+	site := strings.TrimRight(ch.BaseURL, "/")
 	statusBody, err := c.getJSON(ctx, site+"/api/status", nil)
 	if err != nil {
 		return nil, fmt.Errorf("newapi status: %w", err)
@@ -210,8 +210,8 @@ func (c *Client) GetBalance(ctx context.Context, ch *connector.Channel, session 
 	}, nil
 }
 
-func (c *Client) GetCosts(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) (*connector.CostResult, error) {
-	site := strings.TrimRight(ch.SiteURL, "/")
+func (c *Client) GetCosts(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) (*connector.CostResult, error) {
+	site := strings.TrimRight(ch.BaseURL, "/")
 	statusBody, err := c.getJSON(ctx, site+"/api/status", nil)
 	if err != nil {
 		return nil, fmt.Errorf("newapi status: %w", err)
@@ -261,8 +261,8 @@ func (c *Client) GetCosts(ctx context.Context, ch *connector.Channel, session *c
 	}, nil
 }
 
-func (c *Client) GetRates(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) ([]connector.RateResult, error) {
-	body, err := c.getJSON(ctx, strings.TrimRight(ch.SiteURL, "/")+"/api/user/self/groups", session)
+func (c *Client) GetRates(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) ([]connector.RateResult, error) {
+	body, err := c.getJSON(ctx, strings.TrimRight(ch.BaseURL, "/")+"/api/user/self/groups", session)
 	if err != nil {
 		return nil, fmt.Errorf("newapi groups: %w", err)
 	}
@@ -290,8 +290,8 @@ func (c *Client) GetRates(ctx context.Context, ch *connector.Channel, session *c
 	return out, nil
 }
 
-func (c *Client) GetAnnouncements(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) ([]connector.AnnouncementResult, error) {
-	site := strings.TrimRight(ch.SiteURL, "/")
+func (c *Client) GetAnnouncements(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) ([]connector.AnnouncementResult, error) {
+	site := strings.TrimRight(ch.BaseURL, "/")
 	var items []connector.AnnouncementResult
 
 	if body, err := c.getJSON(ctx, site+"/api/status", nil); err == nil {
@@ -345,8 +345,8 @@ func (c *Client) GetAnnouncements(ctx context.Context, ch *connector.Channel, se
 	return dedupeAnnouncements(items), nil
 }
 
-func (c *Client) RedeemCode(ctx context.Context, ch *connector.Channel, session *connector.AuthSession, code string) (*connector.RedeemResult, error) {
-	site := strings.TrimRight(ch.SiteURL, "/")
+func (c *Client) RedeemCode(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession, code string) (*connector.RedeemResult, error) {
+	site := strings.TrimRight(ch.BaseURL, "/")
 	statusBody, err := c.getJSON(ctx, site+"/api/status", nil)
 	if err != nil {
 		return nil, fmt.Errorf("newapi status: %w", err)
@@ -395,8 +395,8 @@ func (c *Client) RedeemCode(ctx context.Context, ch *connector.Channel, session 
 	}, nil
 }
 
-func (c *Client) GetRechargeInfo(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) (*connector.RechargeInfo, error) {
-	body, err := c.getJSON(ctx, strings.TrimRight(ch.SiteURL, "/")+"/api/user/topup/info", session)
+func (c *Client) GetRechargeInfo(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) (*connector.RechargeInfo, error) {
+	body, err := c.getJSON(ctx, strings.TrimRight(ch.BaseURL, "/")+"/api/user/topup/info", session)
 	if err != nil {
 		return nil, fmt.Errorf("newapi topup info: %w", err)
 	}
@@ -453,7 +453,7 @@ func (c *Client) GetRechargeInfo(ctx context.Context, ch *connector.Channel, ses
 	}, nil
 }
 
-func (c *Client) CreateRecharge(ctx context.Context, ch *connector.Channel, session *connector.AuthSession, req connector.RechargeRequest) (*connector.RechargeLaunch, error) {
+func (c *Client) CreateRecharge(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession, req connector.RechargeRequest) (*connector.RechargeLaunch, error) {
 	if req.PaymentMethod != "alipay" && req.PaymentMethod != "wxpay" {
 		return nil, errors.New("newapi 仅支持 alipay 或 wxpay")
 	}
@@ -468,7 +468,7 @@ func (c *Client) CreateRecharge(ctx context.Context, ch *connector.Channel, sess
 			"payment_method": req.PaymentMethod,
 		})
 	applyNewAPIAuth(r, session)
-	resp, err := r.Post(strings.TrimRight(ch.SiteURL, "/") + "/api/user/pay")
+	resp, err := r.Post(strings.TrimRight(ch.BaseURL, "/") + "/api/user/pay")
 	if err != nil {
 		return nil, fmt.Errorf("newapi create recharge http: %w", err)
 	}
@@ -515,21 +515,21 @@ func (c *Client) CreateRecharge(ctx context.Context, ch *connector.Channel, sess
 	}, nil
 }
 
-func (c *Client) GetSubscriptionInfo(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) (*connector.SubscriptionInfo, error) {
+func (c *Client) GetSubscriptionInfo(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) (*connector.SubscriptionInfo, error) {
 	return nil, errors.New("newapi 不支持订阅购买")
 }
 
-func (c *Client) CreateSubscription(ctx context.Context, ch *connector.Channel, session *connector.AuthSession, req connector.SubscriptionRequest) (*connector.SubscriptionLaunch, error) {
+func (c *Client) CreateSubscription(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession, req connector.SubscriptionRequest) (*connector.SubscriptionLaunch, error) {
 	return nil, errors.New("newapi 不支持订阅购买")
 }
 
-func (c *Client) GetSubscriptionUsage(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) (*connector.SubscriptionUsageInfo, error) {
+func (c *Client) GetSubscriptionUsage(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) (*connector.SubscriptionUsageInfo, error) {
 	return nil, errors.New("newapi 不支持订阅用量")
 }
 
-func (c *Client) ListAPIKeys(ctx context.Context, ch *connector.Channel, session *connector.AuthSession, query connector.APIKeyQuery) (*connector.APIKeyPage, error) {
+func (c *Client) ListAPIKeys(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession, query connector.APIKeyQuery) (*connector.APIKeyPage, error) {
 	page, pageSize := normalizeAPIKeyPage(query.Page, query.PageSize)
-	site := strings.TrimRight(ch.SiteURL, "/")
+	site := strings.TrimRight(ch.BaseURL, "/")
 	params := url.Values{}
 	params.Set("p", strconv.Itoa(page))
 	params.Set("page_size", strconv.Itoa(pageSize))
@@ -583,7 +583,7 @@ func (c *Client) ListAPIKeys(ctx context.Context, ch *connector.Channel, session
 	}, nil
 }
 
-func (c *Client) ListAPIKeyGroups(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) ([]connector.APIKeyGroup, error) {
+func (c *Client) ListAPIKeyGroups(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) ([]connector.APIKeyGroup, error) {
 	groups, err := c.newAPIGroupMap(ctx, ch, session)
 	if err != nil {
 		return nil, err
@@ -595,7 +595,7 @@ func (c *Client) ListAPIKeyGroups(ctx context.Context, ch *connector.Channel, se
 	return out, nil
 }
 
-func (c *Client) CreateAPIKey(ctx context.Context, ch *connector.Channel, session *connector.AuthSession, req connector.APIKeyCreateRequest) (*connector.APIKey, error) {
+func (c *Client) CreateAPIKey(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession, req connector.APIKeyCreateRequest) (*connector.APIKey, error) {
 	if strings.TrimSpace(req.Name) == "" {
 		return nil, errors.New("密钥名称不能为空")
 	}
@@ -613,7 +613,7 @@ func (c *Client) CreateAPIKey(ctx context.Context, ch *connector.Channel, sessio
 		SetHeader("Content-Type", "application/json").
 		SetBody(body)
 	applyNewAPIAuth(restyReq, session)
-	resp, err := restyReq.Post(strings.TrimRight(ch.SiteURL, "/") + "/api/token/")
+	resp, err := restyReq.Post(strings.TrimRight(ch.BaseURL, "/") + "/api/token/")
 	if err != nil {
 		return nil, fmt.Errorf("newapi create api key http: %w", err)
 	}
@@ -657,7 +657,7 @@ func (c *Client) CreateAPIKey(ctx context.Context, ch *connector.Channel, sessio
 	return nil, errors.New("newapi create api key: missing key id")
 }
 
-func (c *Client) UpdateAPIKey(ctx context.Context, ch *connector.Channel, session *connector.AuthSession, id int64, req connector.APIKeyUpdateRequest) (*connector.APIKey, error) {
+func (c *Client) UpdateAPIKey(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession, id int64, req connector.APIKeyUpdateRequest) (*connector.APIKey, error) {
 	if id <= 0 {
 		return nil, errors.New("密钥 ID 无效")
 	}
@@ -667,7 +667,7 @@ func (c *Client) UpdateAPIKey(ctx context.Context, ch *connector.Channel, sessio
 		SetHeader("Content-Type", "application/json").
 		SetBody(body)
 	applyNewAPIAuth(restyReq, session)
-	resp, err := restyReq.Put(strings.TrimRight(ch.SiteURL, "/") + "/api/token/")
+	resp, err := restyReq.Put(strings.TrimRight(ch.BaseURL, "/") + "/api/token/")
 	if err != nil {
 		return nil, fmt.Errorf("newapi update api key http: %w", err)
 	}
@@ -695,13 +695,13 @@ func (c *Client) UpdateAPIKey(ctx context.Context, ch *connector.Channel, sessio
 	return &out, nil
 }
 
-func (c *Client) DeleteAPIKey(ctx context.Context, ch *connector.Channel, session *connector.AuthSession, id int64) error {
+func (c *Client) DeleteAPIKey(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession, id int64) error {
 	if id <= 0 {
 		return errors.New("密钥 ID 无效")
 	}
 	delReq := c.http.R().SetContext(ctx)
 	applyNewAPIAuth(delReq, session)
-	resp, err := delReq.Delete(strings.TrimRight(ch.SiteURL, "/") + "/api/token/" + strconv.FormatInt(id, 10))
+	resp, err := delReq.Delete(strings.TrimRight(ch.BaseURL, "/") + "/api/token/" + strconv.FormatInt(id, 10))
 	if err != nil {
 		return fmt.Errorf("newapi delete api key http: %w", err)
 	}
@@ -711,13 +711,13 @@ func (c *Client) DeleteAPIKey(ctx context.Context, ch *connector.Channel, sessio
 	return decodeNewAPIWrite(resp.Body(), "newapi delete api key")
 }
 
-func (c *Client) RevealAPIKey(ctx context.Context, ch *connector.Channel, session *connector.AuthSession, id int64) (string, error) {
+func (c *Client) RevealAPIKey(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession, id int64) (string, error) {
 	if id <= 0 {
 		return "", errors.New("密钥 ID 无效")
 	}
 	revealReq := c.http.R().SetContext(ctx)
 	applyNewAPIAuth(revealReq, session)
-	resp, err := revealReq.Post(strings.TrimRight(ch.SiteURL, "/") + "/api/token/" + strconv.FormatInt(id, 10) + "/key")
+	resp, err := revealReq.Post(strings.TrimRight(ch.BaseURL, "/") + "/api/token/" + strconv.FormatInt(id, 10) + "/key")
 	if err != nil {
 		return "", fmt.Errorf("newapi reveal api key http: %w", err)
 	}
@@ -924,7 +924,7 @@ func (c *Client) quotaToUSD(quota float64, quotaPerUnit float64) float64 {
 	return round4(quota / quotaPerUnit)
 }
 
-func newAPIRechargeMultiplier(ch *connector.Channel, price float64) *float64 {
+func newAPIRechargeMultiplier(ch *connector.AccountTarget, price float64) *float64 {
 	if ch.RechargeMultiplier != nil && *ch.RechargeMultiplier > 0 {
 		return ch.RechargeMultiplier
 	}
@@ -1046,8 +1046,8 @@ func dedupeAnnouncements(items []connector.AnnouncementResult) []connector.Annou
 	return out
 }
 
-func (c *Client) newAPIGroupMap(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) (map[string]connector.APIKeyGroup, error) {
-	body, err := c.getJSON(ctx, strings.TrimRight(ch.SiteURL, "/")+"/api/user/self/groups", session)
+func (c *Client) newAPIGroupMap(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) (map[string]connector.APIKeyGroup, error) {
+	body, err := c.getJSON(ctx, strings.TrimRight(ch.BaseURL, "/")+"/api/user/self/groups", session)
 	if err != nil {
 		return nil, fmt.Errorf("newapi api key groups: %w", err)
 	}

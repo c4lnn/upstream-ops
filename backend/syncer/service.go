@@ -21,20 +21,21 @@ import (
 	"github.com/bejix/upstream-ops/backend/storage"
 )
 
-type channelSvc interface {
-	RevealAPIKey(ctx context.Context, channelID uint, keyID int64) (string, error)
-	CreateAPIKey(ctx context.Context, channelID uint, req connector.APIKeyCreateRequest) (*connector.APIKey, error)
-	UpdateAPIKey(ctx context.Context, channelID uint, keyID int64, req connector.APIKeyUpdateRequest) (*connector.APIKey, error)
-	DeleteAPIKey(ctx context.Context, channelID uint, keyID int64) error
-	ListAPIKeys(ctx context.Context, channelID uint, query connector.APIKeyQuery) (*connector.APIKeyPage, error)
-	ListAPIKeyGroups(ctx context.Context, channelID uint) ([]connector.APIKeyGroup, error)
+type accountSvc interface {
+	RevealAPIKey(ctx context.Context, accountID uint, keyID int64) (string, error)
+	CreateAPIKey(ctx context.Context, accountID uint, req connector.APIKeyCreateRequest) (*connector.APIKey, error)
+	UpdateAPIKey(ctx context.Context, accountID uint, keyID int64, req connector.APIKeyUpdateRequest) (*connector.APIKey, error)
+	DeleteAPIKey(ctx context.Context, accountID uint, keyID int64) error
+	ListAPIKeys(ctx context.Context, accountID uint, query connector.APIKeyQuery) (*connector.APIKeyPage, error)
+	ListAPIKeyGroups(ctx context.Context, accountID uint) ([]connector.APIKeyGroup, error)
 }
 
 type Service struct {
-	channels   *storage.Channels
+	accounts   *storage.UpstreamAccounts
+	sites      *storage.UpstreamSites
 	rates      *storage.Rates
 	cipher     *crypto.Cipher
-	channelSvc channelSvc
+	accountSvc accountSvc
 	log        *slog.Logger
 	dispatcher *notify.Dispatcher
 
@@ -47,10 +48,11 @@ type Service struct {
 }
 
 func New(
-	channels *storage.Channels,
+	accounts *storage.UpstreamAccounts,
+	sites *storage.UpstreamSites,
 	rates *storage.Rates,
 	cipher *crypto.Cipher,
-	channelSvc channelSvc,
+	accountSvc accountSvc,
 	log *slog.Logger,
 	targets *storage.UpstreamSyncTargets,
 	groups *storage.UpstreamSyncTargetGroups,
@@ -60,10 +62,11 @@ func New(
 	logs *storage.UpstreamSyncLogs,
 ) *Service {
 	return &Service{
-		channels:        channels,
+		accounts:        accounts,
+		sites:           sites,
 		rates:           rates,
 		cipher:          cipher,
-		channelSvc:      channelSvc,
+		accountSvc:      accountSvc,
 		log:             log,
 		targets:         targets,
 		groups:          groups,
@@ -72,6 +75,21 @@ func New(
 		managedAccounts: managedAccounts,
 		logs:            logs,
 	}
+}
+
+func (s *Service) resolveSourceAccount(accountID uint) (*storage.UpstreamAccount, *storage.UpstreamSite, error) {
+	if accountID == 0 {
+		return nil, nil, errors.New("source account is required")
+	}
+	account, err := s.accounts.FindByID(accountID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("source account missing: %d: %w", accountID, err)
+	}
+	site, err := s.sites.FindByID(account.SiteID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("source site missing for account %d: %w", accountID, err)
+	}
+	return account, site, nil
 }
 
 func (s *Service) SetDispatcher(dispatcher *notify.Dispatcher) {
@@ -135,7 +153,8 @@ type SyncGroupDTO struct {
 
 type SyncAccountDTO struct {
 	ID               uint    `json:"id,omitempty"`
-	SourceChannelID  uint    `json:"source_channel_id"`
+	SourceSiteID     uint    `json:"source_site_id"`
+	SourceAccountID  uint    `json:"source_account_id"`
 	SourceGroupID    *int64  `json:"source_group_id,omitempty"`
 	SourceGroupName  string  `json:"source_group_name,omitempty"`
 	ProxyID          *int64  `json:"proxy_id,omitempty"`
@@ -149,7 +168,7 @@ type SyncAccountDTO struct {
 }
 
 type SourceModelsInput struct {
-	ChannelID       uint
+	AccountID       uint
 	SyncAccountID   uint
 	SourceGroupID   *int64
 	SourceGroupName string
@@ -376,14 +395,14 @@ func (s *Service) ListTargetProxies(ctx context.Context, targetID uint) ([]Targe
 }
 
 func (s *Service) ListSourceModels(ctx context.Context, in SourceModelsInput) ([]string, error) {
-	if in.ChannelID == 0 {
-		return nil, errors.New("source channel is required")
+	if in.AccountID == 0 {
+		return nil, errors.New("source account is required")
 	}
-	ch, err := s.channels.FindByID(in.ChannelID)
+	_, site, err := s.resolveSourceAccount(in.AccountID)
 	if err != nil {
 		return nil, err
 	}
-	page, err := s.channelSvc.ListAPIKeys(ctx, in.ChannelID, connector.APIKeyQuery{Page: 1, PageSize: 100})
+	page, err := s.accountSvc.ListAPIKeys(ctx, in.AccountID, connector.APIKeyQuery{Page: 1, PageSize: 100})
 	if err != nil {
 		return nil, err
 	}
@@ -398,13 +417,13 @@ func (s *Service) ListSourceModels(ctx context.Context, in SourceModelsInput) ([
 		if sourceModelGroupSpecified(in.SourceGroupID, in.SourceGroupName) {
 			return nil, errors.New("当前源分组没有可用 API Key，请先创建或应用同步账号")
 		}
-		return nil, errors.New("该渠道没有可用于获取模型的 API Key")
+		return nil, errors.New("该账号没有可用于获取模型的 API Key")
 	}
-	secret, err := s.channelSvc.RevealAPIKey(ctx, in.ChannelID, key.ID)
+	secret, err := s.accountSvc.RevealAPIKey(ctx, in.AccountID, key.ID)
 	if err != nil {
 		return nil, err
 	}
-	return fetchGatewayModels(ctx, ch.SiteURL, in.Platform, secret)
+	return fetchGatewayModels(ctx, site.BaseURL, in.Platform, secret)
 }
 
 func (s *Service) ListSyncGroups() ([]SyncGroupDTO, error) {
@@ -426,15 +445,18 @@ func (s *Service) ListSyncGroups() ([]SyncGroupDTO, error) {
 
 func (s *Service) CreateSyncGroup(in SyncGroupDTO) (*SyncGroupDTO, error) {
 	accounts := accountItems(in.Accounts)
+	if err := s.validateSourceAccounts(accounts); err != nil {
+		return nil, err
+	}
 	sourceGroupID := int64(0)
-	sourceChannelID := uint(0)
+	sourceAccountID := uint(0)
 	if len(accounts) > 0 {
-		sourceChannelID = accounts[0].SourceChannelID
+		sourceAccountID = accounts[0].SourceAccountID
 		if accounts[0].SourceGroupID != nil {
 			sourceGroupID = *accounts[0].SourceGroupID
 		}
 	}
-	name := renderSyncGroupName(in.NameTemplate, 0, sourceChannelID, sourceGroupID)
+	name := renderSyncGroupName(in.NameTemplate, 0, sourceAccountID, sourceGroupID)
 	displayName := strings.TrimSpace(in.DisplayName)
 	if displayName == "" {
 		displayName = name
@@ -466,7 +488,7 @@ func (s *Service) CreateSyncGroup(in SyncGroupDTO) (*SyncGroupDTO, error) {
 		return nil, err
 	}
 	// 同步分组 ID 只有入库后才确定；这里立刻回写最终名称，保证后续远端对象命名稳定。
-	item.Name = renderSyncGroupName(item.NameTemplate, item.ID, sourceChannelID, sourceGroupID)
+	item.Name = renderSyncGroupName(item.NameTemplate, item.ID, sourceAccountID, sourceGroupID)
 	if strings.TrimSpace(in.DisplayName) == "" {
 		item.DisplayName = item.Name
 	}
@@ -482,6 +504,10 @@ func (s *Service) CreateSyncGroup(in SyncGroupDTO) (*SyncGroupDTO, error) {
 }
 
 func (s *Service) UpdateSyncGroup(id uint, in SyncGroupDTO) (*SyncGroupDTO, error) {
+	accounts := accountItems(in.Accounts)
+	if err := s.validateSourceAccounts(accounts); err != nil {
+		return nil, err
+	}
 	item, err := s.syncGroups.FindByID(id)
 	if err != nil {
 		return nil, err
@@ -507,17 +533,40 @@ func (s *Service) UpdateSyncGroup(id uint, in SyncGroupDTO) (*SyncGroupDTO, erro
 	if err := s.syncGroups.Update(item); err != nil {
 		return nil, err
 	}
-	if err := s.syncAccounts.SaveForGroup(item.ID, accountItems(in.Accounts)); err != nil {
+	if err := s.syncAccounts.SaveForGroup(item.ID, accounts); err != nil {
 		return nil, err
 	}
 	ids, _ := s.syncGroups.ParseTargetGroupIDs(item)
-	accounts, err := s.syncAccounts.ListBySyncGroupID(item.ID)
+	accounts, err = s.syncAccounts.ListBySyncGroupID(item.ID)
 	if err != nil {
 		return nil, err
 	}
 	s.notifySyncGroupChanged("更新", item, accounts)
 	dto := s.toSyncGroupDTO(item, ids, accounts)
 	return &dto, nil
+}
+
+func (s *Service) validateSourceAccounts(accounts []storage.UpstreamSyncAccount) error {
+	for i := range accounts {
+		if accounts[i].SourceAccountID == 0 {
+			if accounts[i].Enabled {
+				return fmt.Errorf("同步账号 %d 未选择源账号", i+1)
+			}
+			continue
+		}
+		account, site, err := s.resolveSourceAccount(accounts[i].SourceAccountID)
+		if err != nil {
+			return fmt.Errorf("源账号不存在: %d", accounts[i].SourceAccountID)
+		}
+		if accounts[i].SourceSiteID != 0 && accounts[i].SourceSiteID != site.ID {
+			return fmt.Errorf("源账号 %d 不属于所选站点 %d", account.ID, accounts[i].SourceSiteID)
+		}
+		if !account.MonitorEnabled {
+			return fmt.Errorf("源账号 %d 已禁用", account.ID)
+		}
+		accounts[i].SourceSiteID = account.SiteID
+	}
+	return nil
 }
 
 func (s *Service) DeleteSyncGroup(id uint) error {
@@ -748,24 +797,24 @@ func (s *Service) ApplySyncGroup(ctx context.Context, syncGroupID uint) (*LogDTO
 }
 
 func (s *Service) sortAccountsForApply(ctx context.Context, syncGroup *storage.UpstreamSyncGroup, accounts []storage.UpstreamSyncAccount) []storage.UpstreamSyncAccount {
-	groupsByChannel := make(map[uint][]connector.APIKeyGroup)
+	groupsByAccount := make(map[uint][]connector.APIKeyGroup)
 	for _, account := range accounts {
-		if account.SourceChannelID == 0 {
+		if account.SourceAccountID == 0 {
 			continue
 		}
-		if _, ok := groupsByChannel[account.SourceChannelID]; ok {
+		if _, ok := groupsByAccount[account.SourceAccountID]; ok {
 			continue
 		}
-		groups, err := s.channelSvc.ListAPIKeyGroups(ctx, account.SourceChannelID)
+		groups, err := s.accountSvc.ListAPIKeyGroups(ctx, account.SourceAccountID)
 		if err != nil {
 			groups = nil
 		}
-		groupsByChannel[account.SourceChannelID] = groups
+		groupsByAccount[account.SourceAccountID] = groups
 	}
 	fixed := make(map[int]storage.UpstreamSyncAccount)
 	sortable := make([]storage.UpstreamSyncAccount, 0, len(accounts))
 	for _, account := range accounts {
-		if !account.Enabled || sourceGroupMissingForSort(&account, groupsByChannel[account.SourceChannelID]) {
+		if !account.Enabled || sourceGroupMissingForSort(&account, groupsByAccount[account.SourceAccountID]) {
 			pos := account.Position
 			if mapped, err := s.managedAccounts.FindByAccountID(account.ID); err == nil && mapped != nil {
 				if mappedPos, ok := managedAccountPosition(syncGroup, mapped.TargetAccountName); ok && mappedPos >= 0 && mappedPos < len(accounts) {
@@ -788,8 +837,8 @@ func (s *Service) sortAccountsForApply(ctx context.Context, syncGroup *storage.U
 		direction = -1
 	}
 	sort.SliceStable(sortable, func(i, j int) bool {
-		leftRate := rateMultiplierForAccount(&sortable[i], groupsByChannel[sortable[i].SourceChannelID])
-		rightRate := rateMultiplierForAccount(&sortable[j], groupsByChannel[sortable[j].SourceChannelID])
+		leftRate := rateMultiplierForAccount(&sortable[i], groupsByAccount[sortable[i].SourceAccountID])
+		rightRate := rateMultiplierForAccount(&sortable[j], groupsByAccount[sortable[j].SourceAccountID])
 		if leftRate != rightRate {
 			return (leftRate-rightRate)*direction < 0
 		}
@@ -848,16 +897,16 @@ func (s *Service) applyAccountsConcurrently(
 	remoteBeforeByID map[int64]sub2api.AdminAccount,
 	now time.Time,
 ) []syncAccountApplyOutcome {
-	// 同一源渠道会复用同一个源 Key，必须按账号顺序处理；不同源渠道才并发。
-	indexesBySourceChannel := make(map[uint][]int)
-	sourceChannelIDs := make([]uint, 0)
+	// 同一源账号会复用同一个源 Key，必须按账号顺序处理；不同源账号才并发。
+	indexesBySourceAccount := make(map[uint][]int)
+	sourceAccountIDs := make([]uint, 0)
 	for i, account := range accounts {
-		if _, ok := indexesBySourceChannel[account.SourceChannelID]; !ok {
-			sourceChannelIDs = append(sourceChannelIDs, account.SourceChannelID)
+		if _, ok := indexesBySourceAccount[account.SourceAccountID]; !ok {
+			sourceAccountIDs = append(sourceAccountIDs, account.SourceAccountID)
 		}
-		indexesBySourceChannel[account.SourceChannelID] = append(indexesBySourceChannel[account.SourceChannelID], i)
+		indexesBySourceAccount[account.SourceAccountID] = append(indexesBySourceAccount[account.SourceAccountID], i)
 	}
-	workerCount := len(sourceChannelIDs)
+	workerCount := len(sourceAccountIDs)
 	if workerCount > applyAccountWorkerLimit {
 		workerCount = applyAccountWorkerLimit
 	}
@@ -871,8 +920,8 @@ func (s *Service) applyAccountsConcurrently(
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for sourceChannelID := range jobs {
-				for _, index := range indexesBySourceChannel[sourceChannelID] {
+			for sourceAccountID := range jobs {
+				for _, index := range indexesBySourceAccount[sourceAccountID] {
 					account := accounts[index]
 					outcome := s.applyAccountWithCleanup(ctx, syncGroup, &account, adminTarget, client, targetGroups, selectedGroups, remoteGroupIDs, remoteBeforeByID, now)
 					outcome.Index = index
@@ -881,8 +930,8 @@ func (s *Service) applyAccountsConcurrently(
 			}
 		}()
 	}
-	for _, sourceChannelID := range sourceChannelIDs {
-		jobs <- sourceChannelID
+	for _, sourceAccountID := range sourceAccountIDs {
+		jobs <- sourceAccountID
 	}
 	close(jobs)
 	wg.Wait()
@@ -962,9 +1011,9 @@ func (s *Service) applyAccount(
 	remoteBeforeByID map[int64]sub2api.AdminAccount,
 	now time.Time,
 ) (*accountApplyResult, error) {
-	ch, err := s.channels.FindByID(syncAccount.SourceChannelID)
+	sourceAccount, sourceSite, err := s.resolveSourceAccount(syncAccount.SourceAccountID)
 	if err != nil {
-		return nil, fmt.Errorf("source channel missing: %d", syncAccount.SourceChannelID)
+		return nil, err
 	}
 	sourceGroups, err := s.checkSourceGroup(ctx, syncAccount)
 	if err != nil {
@@ -976,11 +1025,11 @@ func (s *Service) applyAccount(
 		return nil, err
 	}
 	accountBaseName := managedObjectBaseName(syncGroup, syncAccount)
-	accountName := managedObjectName(syncGroup, syncAccount, ch)
+	accountName := managedObjectName(syncGroup, syncAccount, sourceAccount)
 	accountReq := s.buildAdminAccount(
 		syncGroup,
 		syncAccount,
-		ch,
+		sourceSite,
 		secret,
 		remoteGroupIDs,
 		syncAccount.Position+1,
@@ -1073,13 +1122,13 @@ func (s *Service) applyAccount(
 		return nil, err
 	}
 	msg := fmt.Sprintf(
-		"账号%d：%s远端账号 %s(ID %d)，源渠道 %s(ID %d)，源分组 %s，倍率 %s，权重 %d，并发 %d",
+		"账号%d：%s远端账号 %s(ID %d)，源账号 %s(ID %d)，源分组 %s，倍率 %s，权重 %d，并发 %d",
 		syncAccount.Position+1,
 		action,
 		accountName,
 		account.ID,
-		ch.Name,
-		ch.ID,
+		sourceAccount.Alias,
+		sourceAccount.ID,
 		sourceGroupLabel(syncAccount.SourceGroupID, syncAccount.SourceGroupName, sourceGroups),
 		formatNumber(accountReq.RateMultiplier),
 		syncAccount.Weight,
@@ -1160,16 +1209,16 @@ func (s *Service) ensureDisabledPlaceholderTargetForAccount(
 	now time.Time,
 	reason string,
 ) (string, error) {
-	ch, err := s.channels.FindByID(syncAccount.SourceChannelID)
+	sourceAccount, sourceSite, err := s.resolveSourceAccount(syncAccount.SourceAccountID)
 	if err != nil {
 		return "", err
 	}
-	accountName := managedObjectName(syncGroup, syncAccount, ch)
+	accountName := managedObjectName(syncGroup, syncAccount, sourceAccount)
 	accountBaseName := managedObjectBaseName(syncGroup, syncAccount)
 	accountReq := s.buildAdminAccount(
 		syncGroup,
 		syncAccount,
-		ch,
+		sourceSite,
 		"1234",
 		remoteGroupIDs,
 		syncAccount.Position+1,
@@ -1444,7 +1493,7 @@ func shouldDisableManagedTargetOnApplyError(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "source group missing") || strings.Contains(msg, "source channel missing")
+	return strings.Contains(msg, "source group missing") || strings.Contains(msg, "source account missing")
 }
 
 func shouldCreateDisabledPlaceholderOnApplyError(err error) bool {
@@ -1725,14 +1774,14 @@ func (s *Service) DeleteManaged(ctx context.Context, syncGroupID uint) (*LogDTO,
 			}
 		}
 		syncAccounts, _ := s.syncAccounts.ListBySyncGroupID(syncGroup.ID)
-		channelByAccount := make(map[uint]uint, len(syncAccounts))
+		sourceAccountBySyncAccount := make(map[uint]uint, len(syncAccounts))
 		for _, account := range syncAccounts {
-			channelByAccount[account.ID] = account.SourceChannelID
+			sourceAccountBySyncAccount[account.ID] = account.SourceAccountID
 		}
 		for _, account := range managedAccounts {
 			if account.SourceAPIKeyName == sourceAPIKeyName(syncGroup) || strings.HasPrefix(account.SourceAPIKeyName, syncGroup.Name+"-账号") {
-				if channelID := channelByAccount[account.SyncAccountID]; channelID != 0 {
-					_ = s.channelSvc.DeleteAPIKey(ctx, channelID, account.SourceAPIKeyID)
+				if accountID := sourceAccountBySyncAccount[account.SyncAccountID]; accountID != 0 {
+					_ = s.accountSvc.DeleteAPIKey(ctx, accountID, account.SourceAPIKeyID)
 				}
 			}
 		}
@@ -1794,7 +1843,7 @@ func (s *Service) checkSourceGroup(ctx context.Context, syncAccount *storage.Ups
 	if syncAccount.SourceGroupID == nil && sourceGroupName == "" {
 		return nil, nil
 	}
-	groups, err := s.channelSvc.ListAPIKeyGroups(ctx, syncAccount.SourceChannelID)
+	groups, err := s.accountSvc.ListAPIKeyGroups(ctx, syncAccount.SourceAccountID)
 	if err != nil {
 		return nil, err
 	}
@@ -1842,17 +1891,17 @@ func (s *Service) selectedTargetGroups(syncGroup *storage.UpstreamSyncGroup) ([]
 }
 
 func (s *Service) ensureSourceAPIKey(ctx context.Context, syncGroup *storage.UpstreamSyncGroup, syncAccount *storage.UpstreamSyncAccount, keyName string) (*connector.APIKey, string, error) {
-	sourceChannel, err := s.channels.FindByID(syncAccount.SourceChannelID)
+	_, sourceSite, err := s.resolveSourceAccount(syncAccount.SourceAccountID)
 	if err != nil {
 		return nil, "", err
 	}
-	unlimitedQuota := boolPtrIf(sourceChannel.Type == storage.ChannelTypeNewAPI)
-	neverExpire := int64PtrIf(sourceChannel.Type == storage.ChannelTypeNewAPI, -1)
+	unlimitedQuota := boolPtrIf(sourceSite.Type == storage.UpstreamTypeNewAPI)
+	neverExpire := int64PtrIf(sourceSite.Type == storage.UpstreamTypeNewAPI, -1)
 	var managedKeyID int64
 	if mapped, err := s.managedAccounts.FindByAccountID(syncAccount.ID); err == nil && mapped != nil && mapped.SourceAPIKeyID > 0 {
 		managedKeyID = mapped.SourceAPIKeyID
 	}
-	page, err := s.channelSvc.ListAPIKeys(ctx, syncAccount.SourceChannelID, connector.APIKeyQuery{
+	page, err := s.accountSvc.ListAPIKeys(ctx, syncAccount.SourceAccountID, connector.APIKeyQuery{
 		Page:     1,
 		PageSize: 100,
 		Search:   keyName,
@@ -1868,7 +1917,7 @@ func (s *Service) ensureSourceAPIKey(ctx context.Context, syncGroup *storage.Ups
 		key = findAPIKeyByName(page.Items, keyName)
 	}
 	if key == nil {
-		page, err = s.channelSvc.ListAPIKeys(ctx, syncAccount.SourceChannelID, connector.APIKeyQuery{
+		page, err = s.accountSvc.ListAPIKeys(ctx, syncAccount.SourceAccountID, connector.APIKeyQuery{
 			Page:     1,
 			PageSize: 100,
 		})
@@ -1885,7 +1934,7 @@ func (s *Service) ensureSourceAPIKey(ctx context.Context, syncGroup *storage.Ups
 	if key != nil {
 		name := keyName
 		groupName := strings.TrimSpace(syncAccount.SourceGroupName)
-		updated, err := s.channelSvc.UpdateAPIKey(ctx, syncAccount.SourceChannelID, key.ID, connector.APIKeyUpdateRequest{
+		updated, err := s.accountSvc.UpdateAPIKey(ctx, syncAccount.SourceAccountID, key.ID, connector.APIKeyUpdateRequest{
 			Name:           &name,
 			Group:          stringPtrOrNil(groupName),
 			GroupID:        syncAccount.SourceGroupID,
@@ -1898,7 +1947,7 @@ func (s *Service) ensureSourceAPIKey(ctx context.Context, syncGroup *storage.Ups
 		key = updated
 	} else {
 		groupName := strings.TrimSpace(syncAccount.SourceGroupName)
-		key, err = s.channelSvc.CreateAPIKey(ctx, syncAccount.SourceChannelID, connector.APIKeyCreateRequest{
+		key, err = s.accountSvc.CreateAPIKey(ctx, syncAccount.SourceAccountID, connector.APIKeyCreateRequest{
 			Name:           keyName,
 			Group:          groupName,
 			GroupID:        syncAccount.SourceGroupID,
@@ -1909,7 +1958,7 @@ func (s *Service) ensureSourceAPIKey(ctx context.Context, syncGroup *storage.Ups
 			return nil, "", err
 		}
 	}
-	secret, err := s.channelSvc.RevealAPIKey(ctx, syncAccount.SourceChannelID, key.ID)
+	secret, err := s.accountSvc.RevealAPIKey(ctx, syncAccount.SourceAccountID, key.ID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1934,10 +1983,10 @@ func findAPIKeyByID(items []connector.APIKey, id int64) *connector.APIKey {
 	return nil
 }
 
-func (s *Service) buildAdminAccount(syncGroup *storage.UpstreamSyncGroup, syncAccount *storage.UpstreamSyncAccount, ch *storage.Channel, apiKey string, remoteGroupIDs []int64, priority int, rateMultiplier float64) sub2api.AdminAccount {
+func (s *Service) buildAdminAccount(syncGroup *storage.UpstreamSyncGroup, syncAccount *storage.UpstreamSyncAccount, site *storage.UpstreamSite, apiKey string, remoteGroupIDs []int64, priority int, rateMultiplier float64) sub2api.AdminAccount {
 	credentials := map[string]any{
 		"api_key":  apiKey,
-		"base_url": ch.SiteURL,
+		"base_url": site.BaseURL,
 	}
 	if syncGroup.PoolModeEnabled {
 		credentials["pool_mode"] = true
@@ -2034,13 +2083,13 @@ func managedObjectBaseName(syncGroup *storage.UpstreamSyncGroup, syncAccount *st
 	return fmt.Sprintf("%s-账号%d", syncGroup.Name, syncAccount.Position+1)
 }
 
-func managedObjectName(syncGroup *storage.UpstreamSyncGroup, syncAccount *storage.UpstreamSyncAccount, ch *storage.Channel) string {
+func managedObjectName(syncGroup *storage.UpstreamSyncGroup, syncAccount *storage.UpstreamSyncAccount, account *storage.UpstreamAccount) string {
 	base := managedObjectBaseName(syncGroup, syncAccount)
-	channelName := strings.TrimSpace(ch.Name)
-	if channelName == "" {
+	accountAlias := strings.TrimSpace(account.Alias)
+	if accountAlias == "" {
 		return base
 	}
-	return fmt.Sprintf("%s [%s]", base, channelName)
+	return fmt.Sprintf("%s [%s]", base, accountAlias)
 }
 
 func managedObjectMatchName(name string) string {
@@ -2348,7 +2397,8 @@ func accountItems(list []SyncAccountDTO) []storage.UpstreamSyncAccount {
 		out = append(out, storage.UpstreamSyncAccount{
 			ID:               item.ID,
 			Position:         i,
-			SourceChannelID:  item.SourceChannelID,
+			SourceSiteID:     item.SourceSiteID,
+			SourceAccountID:  item.SourceAccountID,
 			SourceGroupID:    item.SourceGroupID,
 			SourceGroupName:  strings.TrimSpace(item.SourceGroupName),
 			ProxyID:          item.ProxyID,
@@ -2497,7 +2547,8 @@ func accountDTOs(list []storage.UpstreamSyncAccount) []SyncAccountDTO {
 	for _, item := range list {
 		out = append(out, SyncAccountDTO{
 			ID:               item.ID,
-			SourceChannelID:  item.SourceChannelID,
+			SourceSiteID:     item.SourceSiteID,
+			SourceAccountID:  item.SourceAccountID,
 			SourceGroupID:    item.SourceGroupID,
 			SourceGroupName:  item.SourceGroupName,
 			ProxyID:          item.ProxyID,
@@ -2513,9 +2564,9 @@ func accountDTOs(list []storage.UpstreamSyncAccount) []SyncAccountDTO {
 	return out
 }
 
-func renderSyncGroupName(tpl string, syncGroupID uint, channelID uint, sourceGroupID int64) string {
+func renderSyncGroupName(tpl string, syncGroupID uint, accountID uint, sourceGroupID int64) string {
 	out := strings.ReplaceAll(tpl, "{同步分组ID}", strconv.FormatUint(uint64(syncGroupID), 10))
-	out = strings.ReplaceAll(out, "{渠道ID}", strconv.FormatUint(uint64(channelID), 10))
+	out = strings.ReplaceAll(out, "{账号ID}", strconv.FormatUint(uint64(accountID), 10))
 	out = strings.ReplaceAll(out, "{源分组ID}", strconv.FormatInt(sourceGroupID, 10))
 	return strings.TrimSpace(out)
 }

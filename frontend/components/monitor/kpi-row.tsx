@@ -28,9 +28,10 @@ export function KpiRow() {
   const recentChanges = useRateChanges(1, 100)
 
   const data = summary.data
-  const total = data?.total_channels ?? 0
-  const active = data?.active_channels ?? 0
-  const failed = data?.failed_channels ?? 0
+  const total = data?.total_accounts ?? 0
+  const totalSites = data?.total_sites ?? 0
+  const active = data?.active_accounts ?? 0
+  const failed = data?.failed_accounts ?? 0
   const totalBalance = data?.total_balance ?? 0
   const todayTotalCost = data?.today_total_cost ?? 0
   const totalCost = data?.total_cost ?? 0
@@ -48,7 +49,11 @@ export function KpiRow() {
       footer: lowest ? (
         <span className="text-muted-foreground">
           {"最低："}
-          <span className="font-medium text-foreground">{lowest.name}</span>
+          <span className="font-medium text-foreground">
+            {lowest.site_name
+              ? `${lowest.site_name} / ${lowest.account_alias}`
+              : lowest.account_alias}
+          </span>
           {" "}
           <span className="text-warning">{money(lowest.balance)}</span>
         </span>
@@ -76,12 +81,12 @@ export function KpiRow() {
       iconColor: "text-brand",
       footer: (
         <span className="text-muted-foreground">
-          {totalCost > 0 ? "全渠道累计实际扣费" : "暂无累计消费"}
+          {totalCost > 0 ? "全部账号累计实际扣费" : "暂无累计消费"}
         </span>
       ),
     },
     {
-      label: "渠道状态",
+      label: "账号状态",
       value: (
         <span>
           {active}
@@ -101,6 +106,7 @@ export function KpiRow() {
               <span className="text-danger font-medium">{failed} 失败</span>
             </>
           ) : null}
+          {totalSites > 0 ? ` · ${totalSites} 站点` : ""}
         </span>
       ),
     },

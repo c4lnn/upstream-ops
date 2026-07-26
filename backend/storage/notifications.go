@@ -86,7 +86,7 @@ func (r *Notifications) DeleteLogsBefore(cutoff time.Time) (int64, error) {
 	return res.RowsAffected, res.Error
 }
 
-// TryClaimCooldown 原子地尝试占用 (channelID, event) 的发送名额。
+// TryClaimCooldown atomically claims an account/event cooldown slot.
 //
 // 语义：
 //   - 不存在该记录 → 插入 (last_sent_at=now)，返回 true（应该发送）
@@ -96,7 +96,7 @@ func (r *Notifications) DeleteLogsBefore(cutoff time.Time) (int64, error) {
 // 通过"先更新过期记录，再插入新记录"完成原子占用，避免并发扫描下重复发送。
 //
 // cooldown <= 0 时直接返回 true 不写表。
-func (r *Notifications) TryClaimCooldown(channelID uint, event NotificationEvent, cooldown time.Duration) (bool, error) {
+func (r *Notifications) TryClaimCooldown(accountID uint, event NotificationEvent, cooldown time.Duration) (bool, error) {
 	if cooldown <= 0 {
 		return true, nil
 	}
@@ -104,7 +104,7 @@ func (r *Notifications) TryClaimCooldown(channelID uint, event NotificationEvent
 	threshold := now.Add(-cooldown)
 
 	res := r.db.Model(&NotificationCooldown{}).
-		Where("channel_id = ? AND event = ? AND last_sent_at < ?", channelID, event, threshold).
+		Where("account_id = ? AND event = ? AND last_sent_at < ?", accountID, event, threshold).
 		Updates(map[string]any{
 			"last_sent_at": now,
 			"updated_at":   now,
@@ -117,7 +117,7 @@ func (r *Notifications) TryClaimCooldown(channelID uint, event NotificationEvent
 	}
 
 	res = r.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&NotificationCooldown{
-		ChannelID:  channelID,
+		AccountID:  accountID,
 		Event:      event,
 		LastSentAt: now,
 		UpdatedAt:  now,
@@ -128,9 +128,9 @@ func (r *Notifications) TryClaimCooldown(channelID uint, event NotificationEvent
 	return res.RowsAffected > 0, nil
 }
 
-// ResetCooldown 删除某个 (channelID, event) 的冷却记录。
+// ResetCooldown removes an account/event cooldown record.
 // 主要给测试 / 调试用，业务路径不需要主动调用。
-func (r *Notifications) ResetCooldown(channelID uint, event NotificationEvent) error {
-	return r.db.Where("channel_id = ? AND event = ?", channelID, event).
+func (r *Notifications) ResetCooldown(accountID uint, event NotificationEvent) error {
+	return r.db.Where("account_id = ? AND event = ?", accountID, event).
 		Delete(&NotificationCooldown{}).Error
 }

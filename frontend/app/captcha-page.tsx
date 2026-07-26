@@ -7,7 +7,7 @@ export default function CaptchaPage() {
         <div>
           <h1 className="text-lg font-semibold text-foreground">{"打码平台"}</h1>
           <p className="text-xs text-muted-foreground">
-            {"配置 CapSolver / 2Captcha 等 provider；启用 Turnstile 的渠道会自动调用。"}
+            {"配置 CapSolver / 2Captcha 等 provider；启用 Turnstile 的账号会自动调用。"}
           </p>
         </div>
       </header>

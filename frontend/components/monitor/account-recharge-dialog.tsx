@@ -16,28 +16,28 @@ import { Label } from "@/components/ui/label"
 import { Progress } from "@/components/ui/progress"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { apiFetch } from "@/lib/api"
-import { channelTypeLabel, dateTime, decimal } from "@/lib/format"
+import { dateTime, decimal } from "@/lib/format"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { cn } from "@/lib/utils"
 import type {
-  Channel,
-  ChannelRechargeInfo,
-  ChannelRechargeLaunch,
-  ChannelSubscriptionInfo,
-  ChannelSubscriptionLaunch,
-  ChannelSubscriptionMethod,
-  ChannelSubscriptionPlan,
-  ChannelSubscriptionUsage,
-  ChannelSubscriptionUsageInfo,
-  ChannelSubscriptionUsageWindow,
+  AccountRechargeInfo,
+  AccountRechargeLaunch,
+  AccountSubscriptionInfo,
+  AccountSubscriptionLaunch,
+  AccountSubscriptionMethod,
+  AccountSubscriptionPlan,
+  AccountSubscriptionUsage,
+  AccountSubscriptionUsageInfo,
+  AccountSubscriptionUsageWindow,
   RechargePaymentMethod,
   SubscriptionPaymentMethod,
+  UpstreamAccount,
 } from "@/lib/api-types"
 
-interface ChannelRechargeDialogProps {
+interface AccountRechargeDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  channel: Channel | null
+  account: UpstreamAccount | null
 }
 
 type ActiveTab = "recharge" | "subscription"
@@ -73,8 +73,8 @@ function paymentMethodLabel(type: string) {
 }
 
 function availableSubscriptionMethods(
-  plan: ChannelSubscriptionPlan | null,
-  methods: ChannelSubscriptionMethod[],
+  plan: AccountSubscriptionPlan | null,
+  methods: AccountSubscriptionMethod[],
 ) {
   const allowed = plan?.payment_methods?.filter(Boolean) ?? []
   if (allowed.length === 0) return methods
@@ -93,7 +93,7 @@ function optionalNumber(value: unknown) {
   return Number.isFinite(n) ? n : null
 }
 
-function normalizeSubscriptionInfo(value: unknown): ChannelSubscriptionInfo {
+function normalizeSubscriptionInfo(value: unknown): AccountSubscriptionInfo {
   const wrapped = value && typeof value === "object" && "data" in value
     ? (value as { data?: unknown }).data
     : value
@@ -132,7 +132,7 @@ function normalizeSubscriptionInfo(value: unknown): ChannelSubscriptionInfo {
   }
 }
 
-function normalizeSubscriptionUsageInfo(value: unknown): ChannelSubscriptionUsageInfo {
+function normalizeSubscriptionUsageInfo(value: unknown): AccountSubscriptionUsageInfo {
   const wrapped = value && typeof value === "object" && "data" in value
     ? (value as { data?: unknown }).data
     : value
@@ -157,7 +157,7 @@ function normalizeSubscriptionUsageInfo(value: unknown): ChannelSubscriptionUsag
   }
 }
 
-function normalizeUsageWindow(value: unknown): ChannelSubscriptionUsageWindow | null {
+function normalizeUsageWindow(value: unknown): AccountSubscriptionUsageWindow | null {
   if (!value || typeof value !== "object") return null
   const raw = value as Record<string, unknown>
   const limit = Number(raw.limit_usd)
@@ -178,17 +178,17 @@ function normalizeUsageWindow(value: unknown): ChannelSubscriptionUsageWindow | 
   }
 }
 
-function formatPlanPrice(plan: ChannelSubscriptionPlan) {
+function formatPlanPrice(plan: AccountSubscriptionPlan) {
   const price = decimal(plan.price)
   return plan.currency ? `${plan.currency} ${price}` : price
 }
 
-function usageWindowItems(item: ChannelSubscriptionUsage) {
+function usageWindowItems(item: AccountSubscriptionUsage) {
   return [
     { label: "今日", value: item.daily },
     { label: "本周", value: item.weekly },
     { label: "本月", value: item.monthly },
-  ].filter((entry): entry is { label: string; value: ChannelSubscriptionUsageWindow } => !!entry.value && entry.value.limit_usd > 0)
+  ].filter((entry): entry is { label: string; value: AccountSubscriptionUsageWindow } => !!entry.value && entry.value.limit_usd > 0)
 }
 
 function subscriptionStatusLabel(status: string) {
@@ -200,7 +200,7 @@ function subscriptionStatusLabel(status: string) {
   return map[status] ?? (status || "未知")
 }
 
-function planLimitItems(plan: ChannelSubscriptionPlan) {
+function planLimitItems(plan: AccountSubscriptionPlan) {
   return [
     { label: "日限制", value: plan.daily_limit_usd },
     { label: "周限制", value: plan.weekly_limit_usd },
@@ -208,14 +208,14 @@ function planLimitItems(plan: ChannelSubscriptionPlan) {
   ].filter((item) => item.value != null && item.value > 0)
 }
 
-export function ChannelRechargeDialog({
+export function AccountRechargeDialog({
   open,
   onOpenChange,
-  channel,
-}: ChannelRechargeDialogProps) {
+  account,
+}: AccountRechargeDialogProps) {
   const isMobile = useIsMobile()
-  const subscriptionEnabled = channel?.type === "sub2api" && !!channel?.subscription_enabled
-  const channelID = channel?.id ?? null
+  const subscriptionEnabled = !!account?.subscription_enabled
+  const accountID = account?.id ?? null
   const [activeTab, setActiveTab] = useState<ActiveTab>("recharge")
   const [loading, setLoading] = useState(false)
   const [subLoading, setSubLoading] = useState(false)
@@ -223,20 +223,20 @@ export function ChannelRechargeDialog({
   const [subscriptionReloadTick, setSubscriptionReloadTick] = useState(0)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [info, setInfo] = useState<ChannelRechargeInfo | null>(null)
-  const [subscriptionInfo, setSubscriptionInfo] = useState<ChannelSubscriptionInfo | null>(null)
-  const [subscriptionUsage, setSubscriptionUsage] = useState<ChannelSubscriptionUsageInfo | null>(null)
+  const [info, setInfo] = useState<AccountRechargeInfo | null>(null)
+  const [subscriptionInfo, setSubscriptionInfo] = useState<AccountSubscriptionInfo | null>(null)
+  const [subscriptionUsage, setSubscriptionUsage] = useState<AccountSubscriptionUsageInfo | null>(null)
   const [subscriptionUsageError, setSubscriptionUsageError] = useState<string | null>(null)
   const [amount, setAmount] = useState("")
   const [method, setMethod] = useState<RechargePaymentMethod | "">("")
   const [subscriptionPlanID, setSubscriptionPlanID] = useState("")
   const [subscriptionMethod, setSubscriptionMethod] = useState<SubscriptionPaymentMethod | "">("")
-  const [launch, setLaunch] = useState<ChannelRechargeLaunch | ChannelSubscriptionLaunch | null>(null)
+  const [launch, setLaunch] = useState<AccountRechargeLaunch | AccountSubscriptionLaunch | null>(null)
   const [launchMethod, setLaunchMethod] = useState("")
   const qrCanvasRef = useRef<HTMLCanvasElement | null>(null)
 
   useEffect(() => {
-    if (!open || channelID == null) return
+    if (!open || accountID == null) return
     let cancelled = false
     setActiveTab("recharge")
     setLoading(true)
@@ -253,7 +253,7 @@ export function ChannelRechargeDialog({
     setMethod("")
     setSubscriptionPlanID("")
     setSubscriptionMethod("")
-    apiFetch<ChannelRechargeInfo>(`/channels/${channelID}/recharge-info`)
+    apiFetch<AccountRechargeInfo>(`/accounts/${accountID}/recharge-info`)
       .then((data) => {
         if (cancelled) return
         setInfo(data)
@@ -277,10 +277,10 @@ export function ChannelRechargeDialog({
     return () => {
       cancelled = true
     }
-  }, [open, channelID])
+  }, [open, accountID])
 
   useEffect(() => {
-    if (!open || channelID == null || !subscriptionEnabled || activeTab !== "subscription") {
+    if (!open || accountID == null || !subscriptionEnabled || activeTab !== "subscription") {
       setSubLoading(false)
       setUsageLoading(false)
       return
@@ -291,8 +291,8 @@ export function ChannelRechargeDialog({
     setError(null)
     setSubscriptionUsageError(null)
     Promise.allSettled([
-      apiFetch<unknown>(`/channels/${channelID}/subscription-info`),
-      apiFetch<unknown>(`/channels/${channelID}/subscription-usage`),
+      apiFetch<unknown>(`/accounts/${accountID}/subscription-info`),
+      apiFetch<unknown>(`/accounts/${accountID}/subscription-usage`),
     ])
       .then(([infoResult, usageResult]) => {
         if (cancelled) return
@@ -324,7 +324,7 @@ export function ChannelRechargeDialog({
     return () => {
       cancelled = true
     }
-  }, [open, channelID, subscriptionEnabled, activeTab, subscriptionReloadTick])
+  }, [open, accountID, subscriptionEnabled, activeTab, subscriptionReloadTick])
 
   useEffect(() => {
     if (!launch || launch.mode !== "qrcode" || !launch.qr_code || !qrCanvasRef.current) {
@@ -365,11 +365,11 @@ export function ChannelRechargeDialog({
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
-    if (!channel || !selectedMethod) return
+    if (!account || !selectedMethod) return
     setSubmitting(true)
     setError(null)
     try {
-      const result = await apiFetch<ChannelRechargeLaunch>(`/channels/${channel.id}/recharge`, {
+      const result = await apiFetch<AccountRechargeLaunch>(`/accounts/${account.id}/recharge`, {
         method: "POST",
         body: JSON.stringify({
           amount: parsedAmount,
@@ -403,11 +403,11 @@ export function ChannelRechargeDialog({
 
   async function handleSubscriptionSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
-    if (!channel || !selectedSubscriptionPlan || !selectedSubscriptionMethod) return
+    if (!account || !selectedSubscriptionPlan || !selectedSubscriptionMethod) return
     setSubmitting(true)
     setError(null)
     try {
-      const result = await apiFetch<ChannelSubscriptionLaunch>(`/channels/${channel.id}/subscription`, {
+      const result = await apiFetch<AccountSubscriptionLaunch>(`/accounts/${account.id}/subscription`, {
         method: "POST",
         body: JSON.stringify({
           plan_id: selectedSubscriptionPlan.id,
@@ -740,8 +740,8 @@ export function ChannelRechargeDialog({
     )
   }
 
-  const description = channel
-    ? `${channel.name} · ${channelTypeLabel(channel.type)}`
+  const description = account
+    ? account.alias
     : "选择充值方式后发起支付。"
 
   return (
