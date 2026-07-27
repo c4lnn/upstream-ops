@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -15,19 +16,38 @@ import (
 	"github.com/bejix/upstream-ops/backend/account"
 	"github.com/bejix/upstream-ops/backend/crypto"
 	"github.com/bejix/upstream-ops/backend/monitor"
+	"github.com/bejix/upstream-ops/backend/progress"
 	"github.com/bejix/upstream-ops/backend/storage"
 	"github.com/gin-gonic/gin"
 )
 
 type siteSyncStub struct{ calledSiteID uint }
 
+type blockingSiteSyncStub struct {
+	siteSyncStub
+	release chan struct{}
+}
+
+func (s *blockingSiteSyncStub) SyncSite(ctx context.Context, siteID uint) ([]monitor.SiteAccountSyncResult, error) {
+	accountCtx := progress.WithScope(ctx, progress.Scope{
+		Level: "account", SiteID: siteID, SiteName: "example", AccountID: 1, AccountAlias: "primary", Index: 1, Total: 1,
+	})
+	progress.Start(accountCtx, progress.StageBalance, "拉取余额…")
+	<-s.release
+	return []monitor.SiteAccountSyncResult{{AccountID: 1, AccountName: "primary", Success: true}}, nil
+}
+
 func (s *siteSyncStub) RefreshBalance(context.Context, *storage.UpstreamAccount) error { return nil }
 func (s *siteSyncStub) RefreshRates(context.Context, *storage.UpstreamAccount) error   { return nil }
 func (s *siteSyncStub) CheckSubscriptionUsageAlerts(context.Context, *storage.UpstreamAccount) error {
 	return nil
 }
-func (s *siteSyncStub) SyncSite(_ context.Context, siteID uint) ([]monitor.SiteAccountSyncResult, error) {
+func (s *siteSyncStub) SyncSite(ctx context.Context, siteID uint) ([]monitor.SiteAccountSyncResult, error) {
 	s.calledSiteID = siteID
+	accountCtx := progress.WithScope(ctx, progress.Scope{
+		Level: "account", SiteID: siteID, SiteName: "example", AccountID: 1, AccountAlias: "primary", Index: 1, Total: 1,
+	})
+	progress.Start(accountCtx, progress.StageBalance, "拉取余额…")
 	return []monitor.SiteAccountSyncResult{{AccountID: 1, AccountName: "primary", Success: true}}, errors.New("partial failure")
 }
 
@@ -186,16 +206,76 @@ func TestSiteSyncReturnsPartialAccountResults(t *testing.T) {
 	}
 	var payload struct {
 		Data struct {
-			Items   []monitor.SiteAccountSyncResult `json:"items"`
-			Partial bool                            `json:"partial"`
+			Items        []monitor.SiteAccountSyncResult `json:"items"`
+			Partial      bool                            `json:"partial"`
+			Status       string                          `json:"status"`
+			SuccessCount int                             `json:"success_count"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode sync response: %v", err)
 	}
-	if stub.calledSiteID != 9 || !payload.Data.Partial || len(payload.Data.Items) != 1 || payload.Data.Items[0].AccountID != 1 {
+	if stub.calledSiteID != 9 || !payload.Data.Partial || payload.Data.Status != "partial" || payload.Data.SuccessCount != 1 || len(payload.Data.Items) != 1 || payload.Data.Items[0].AccountID != 1 {
 		t.Fatalf("sync payload = %#v, site = %d", payload.Data, stub.calledSiteID)
 	}
+}
+
+func TestSiteSyncStreamEmitsAccountProgressAndOperationSummary(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	stub := &siteSyncStub{}
+	router := gin.New()
+	registerSites(router.Group("/api"), &Deps{Sites: storage.NewUpstreamSites(openTestDB(t)), Monitor: stub})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/sites/9/sync-stream", nil)
+	request.Header.Set("Accept", "text/event-stream")
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK || !strings.HasPrefix(response.Header().Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("stream status = %d content-type = %q", response.Code, response.Header().Get("Content-Type"))
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"account_id":1`, `"scope":"account"`, `"scope":"operation"`, `"status":"partial"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("stream body missing %s: %s", want, body)
+		}
+	}
+}
+
+func TestSiteSyncStreamFlushesProgressBeforeBatchCompletes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	stub := &blockingSiteSyncStub{release: make(chan struct{})}
+	released := false
+	defer func() {
+		if !released {
+			close(stub.release)
+		}
+	}()
+	router := gin.New()
+	registerSites(router.Group("/api"), &Deps{Sites: storage.NewUpstreamSites(openTestDB(t)), Monitor: stub})
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/api/sites/9/sync-stream", nil)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	request.Header.Set("Accept", "text/event-stream")
+	response, err := (&http.Client{Timeout: 2 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	defer response.Body.Close()
+
+	line, err := bufio.NewReader(response.Body).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read first progress frame: %v", err)
+	}
+	if !strings.Contains(line, `"stage":"balance"`) || !strings.Contains(line, `"account_id":1`) {
+		t.Fatalf("first progress line = %s", line)
+	}
+	close(stub.release)
+	released = true
 }
 
 func TestSiteListAggregatesPerSiteBalancesForSameAliasAccounts(t *testing.T) {

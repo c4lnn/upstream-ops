@@ -11,7 +11,7 @@ import {
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth-context"
 import { apiFetch } from "@/lib/api"
-import { useTriggerRefresh } from "@/lib/refresh-context"
+import { useRefreshStatus, useTriggerRefresh } from "@/lib/refresh-context"
 import { useAccounts, useAppVersion } from "@/lib/queries"
 import type { AppVersion } from "@/lib/api-types"
 import { relativeTime } from "@/lib/format"
@@ -22,10 +22,10 @@ export function MonitorHeader() {
   const { theme, setTheme } = useTheme()
   const { username, authDisabled, logout } = useAuth()
   const refresh = useTriggerRefresh()
+  const { refreshing, result: refreshResult } = useRefreshStatus()
   const accounts = useAccounts()
   const appVersion = useAppVersion()
   const [mounted, setMounted] = useState(false)
-  const [syncing, setSyncing] = useState(false)
   const [checkingVersion, setCheckingVersion] = useState(false)
 
   const appTitle = appVersion.data?.title?.trim() || "UpstreamOps"
@@ -39,6 +39,12 @@ export function MonitorHeader() {
   useEffect(() => {
     document.title = appTitle
   }, [appTitle])
+
+  useEffect(() => {
+    if (!refreshResult) return
+    if (refreshResult.status === "success") toast.success("数据已刷新")
+    else toast.error("刷新页面数据失败")
+  }, [refreshResult])
 
   /**
    * 找出所有账号中最近一次采集时间——这是"上次采集"展示的依据，
@@ -60,9 +66,7 @@ export function MonitorHeader() {
   }, [accounts.data])
 
   function handleRefresh() {
-    setSyncing(true)
-    refresh()
-    setTimeout(() => setSyncing(false), 800)
+    refresh({ notify: true })
   }
 
   async function handleCheckVersion() {
@@ -134,17 +138,17 @@ export function MonitorHeader() {
                   variant="outline"
                   size="sm"
                   onClick={handleRefresh}
-                  disabled={syncing}
+                  disabled={refreshing}
                   className="gap-1.5 border-border bg-background text-foreground hover:bg-muted"
-                  aria-label="刷新视图"
+                  aria-label="刷新页面数据"
                 >
-                  <RefreshCw className={cn("size-3.5", syncing && "animate-spin")} />
+                  <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="max-w-xs text-xs">
-                <p>{"重新拉取最新的快照数据。"}</p>
+                <p>{"刷新页面数据"}</p>
                 <p className="mt-1 text-muted-foreground">
-                  {"提示：实际采集由后台定时任务执行，如需立即采集请在具体账号上执行同步。"}
+                  {"读取服务端已保存的最新快照，不会访问上游。"}
                 </p>
               </TooltipContent>
             </Tooltip>
@@ -158,15 +162,15 @@ export function MonitorHeader() {
             variant="outline"
             size="sm"
             onClick={handleRefresh}
-            disabled={syncing}
+            disabled={refreshing}
             className="gap-1.5 border-border bg-background px-2 text-foreground hover:bg-muted sm:hidden"
-            aria-label="刷新视图"
+            aria-label="刷新页面数据"
           >
-            <RefreshCw className={cn("size-3.5", syncing && "animate-spin")} />
+            <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />
           </Button>
             </TooltipTrigger>
             <TooltipContent side="bottom" className="text-xs">
-              {"刷新视图"}
+              {"刷新页面数据"}
             </TooltipContent>
           </Tooltip>
 

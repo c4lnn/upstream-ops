@@ -803,6 +803,7 @@ GET    /api/sites/:site_id
 PUT    /api/sites/:site_id
 DELETE /api/sites/:site_id?cascade=true
 POST   /api/sites/:site_id/sync
+POST   /api/sites/:site_id/sync-stream
 POST   /api/sites/:site_id/accounts
 POST   /api/sites/:site_id/default-account
 ```
@@ -1049,10 +1050,23 @@ DELETE /api/captcha-configs/:id                删除验证码配置
 部分操作耗时较长（如测试登录、批量同步余额和倍率），后端通过 Server-Sent Events（SSE）向前端推送实时进度：
 
 - 测试登录时会推送登录进度、Turnstile 求解状态和最终结果。
-- 单账号同步会串行推送余额同步和倍率同步的进度。
-- 全量同步会推送每个账号的同步进度，附带账号索引（当前数/总数）。
-- 站点“同步全部账号”会 fan-out 为独立账号操作并返回逐账号结果；单个账号失败不会阻止其他账号，也不会用成功账号结果覆盖失败账号。
+- 单账号同步会串行推送余额、消费、适用的订阅用量和分组倍率进度。
+- 站点同步会推送每个账号的同步进度，附带账号索引（当前数/总数），并在站点标题和账号卡片中显示当前阶段。
+- 全量同步会按站点执行完整账号同步，包含分组倍率；事件同时携带站点和账号上下文。
+- 单个账号失败不会阻止同一批次的其他账号；批次结果会明确区分成功、部分成功和失败。
+- 同一站点批次共用倍率扫描标识，在批次结束后聚合倍率通知，并且每个站点只同步一次公告。
 - 前端通过 `ReadableStream` 消费 SSE 事件流，在 UI 中实时展示进度状态和结果摘要。
+
+监控页四类操作具有不同语义：
+
+| 操作 | 数据来源 | loading 结束条件 |
+|---|---|---|
+| 刷新页面数据 | 重新读取服务端已保存的最新快照，不访问上游 | 本轮页面查询全部完成 |
+| 同步账号 | 访问上游，采集指定账号的余额、消费、订阅用量和倍率 | 收到操作终态、流结束或传输失败 |
+| 同步站点 | 访问上游，完整同步站点内全部账号 | 收到操作终态、流结束或传输失败 |
+| 同步全部 | 按站点访问上游，完整同步所有账号 | 收到操作终态、流结束或传输失败 |
+
+三类同步操作结束后都会自动刷新页面数据，不需要再点击右上角刷新按钮。重叠范围的同步操作会在执行期间禁用。
 
 SSE 接口：
 
@@ -1061,12 +1075,13 @@ POST /api/accounts/:account_id/test-login      测试登录（SSE）
 POST /api/accounts/:account_id/sync            单账号同步（SSE）
 POST /api/accounts/sync-all                    全量同步（SSE）
 POST /api/sites/:site_id/sync                  站点全部账号同步（JSON）
+POST /api/sites/:site_id/sync-stream           站点全部账号同步（SSE）
 ```
 
 响应格式为 `text/event-stream`，每行格式：
 
 ```text
-data: {“event”:”progress”,”message”:”...”,”step”:1,”total”:3,”ok”:true}
+data: {"scope":"account","stage":"balance","message":"拉取余额…","account_id":1,"index":1,"total":3}
 ```
 
 ## 运行时配置热重载

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import { apiFetch } from "@/lib/api"
-import { useRefreshTick } from "@/lib/refresh-context"
+import { useRefreshTick, useTrackRefreshRequest } from "@/lib/refresh-context"
 import type {
   AppVersion,
   BalanceTrendPoint,
@@ -83,6 +83,7 @@ function useApi<T>(path: string | null, watchRefresh = true): QueryState<T> {
   const [error, setError] = useState<string | null>(null)
   const [bump, setBump] = useState(0)
   const refreshTick = useRefreshTick()
+  const trackRefreshRequest = useTrackRefreshRequest()
   const globalTick = watchRefresh ? refreshTick : 0
 
   // 已经拿到过数据吗？用 ref 防止 setLoading 写回触发额外 effect。
@@ -98,7 +99,9 @@ function useApi<T>(path: string | null, watchRefresh = true): QueryState<T> {
     // 避免组件因 loading=true 短暂消失再回来造成"闪屏"。
     if (!hasDataRef.current) setLoading(true)
     setError(null)
-    fetchShared<T>(path, cacheKey(path, globalTick, bump))
+    const request = fetchShared<T>(path, cacheKey(path, globalTick, bump))
+    if (watchRefresh) trackRefreshRequest(globalTick, request)
+    request
       .then((d) => {
         if (cancelled) return
         hasDataRef.current = true
@@ -115,7 +118,7 @@ function useApi<T>(path: string | null, watchRefresh = true): QueryState<T> {
     return () => {
       cancelled = true
     }
-  }, [path, bump, globalTick])
+  }, [path, bump, globalTick, trackRefreshRequest, watchRefresh])
 
   return {
     data,
@@ -165,6 +168,7 @@ export function useMultiAccountRates(accountIDs: number[]) {
   const [loading, setLoading] = useState(false)
   const [bump, setBump] = useState(0)
   const refreshTick = useRefreshTick()
+  const trackRefreshRequest = useTrackRefreshRequest()
   const key = accountIDs.slice().sort((a, b) => a - b).join(",")
 
   useEffect(() => {
@@ -175,7 +179,7 @@ export function useMultiAccountRates(accountIDs: number[]) {
     }
     let cancelled = false
     setLoading(true)
-    Promise.all(
+    const request = Promise.all(
       accountIDs.map((id) =>
         fetchShared<RateSnapshot[]>(
           `/accounts/${id}/rates`,
@@ -183,6 +187,8 @@ export function useMultiAccountRates(accountIDs: number[]) {
         ),
       ),
     )
+    trackRefreshRequest(refreshTick, request)
+    request
       .then((results) => {
         if (cancelled) return
         setData(results.flat())
@@ -197,7 +203,7 @@ export function useMultiAccountRates(accountIDs: number[]) {
       cancelled = true
     }
     // accountIDs 是数组引用，用排序后的 key 字符串做依赖避免每次渲染都触发。
-  }, [key, refreshTick, bump])
+  }, [key, refreshTick, bump, trackRefreshRequest])
 
   return { data, loading, refetch: () => setBump((b) => b + 1) }
 }

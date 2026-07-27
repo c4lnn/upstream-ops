@@ -667,6 +667,7 @@ DELETE /api/sites/:site_id?cascade=true
 POST   /api/sites/:site_id/accounts
 POST   /api/sites/:site_id/default-account
 POST   /api/sites/:site_id/sync
+POST   /api/sites/:site_id/sync-stream
 GET    /api/accounts?page=1&page_size=20
 GET    /api/accounts?page=1&page_size=-1
 GET    /api/accounts/:account_id
@@ -750,8 +751,17 @@ SSE progress endpoints:
 POST /api/accounts/:account_id/test-login
 POST /api/accounts/:account_id/sync
 POST /api/accounts/sync-all
-POST /api/sites/:site_id/sync
+POST /api/sites/:site_id/sync-stream
 ```
+
+The monitor distinguishes four operations:
+
+- **Refresh page data** reloads the latest snapshots already stored by the service and never contacts upstreams. Its loading state ends when the refresh-cycle queries settle.
+- **Sync account** collects balance, costs, applicable subscription usage, and rates for one account.
+- **Sync site** performs the same complete collection for every account in one site and streams account-level progress.
+- **Sync all** runs complete collection by site, including rates, while preserving per-site rate notification aggregation and one announcement sync per site.
+
+Synchronization operations report success, partial success, or failure, then automatically refresh stored page data. `POST /api/sites/:site_id/sync` remains the JSON-compatible site synchronization endpoint.
 
 ## Runtime Configuration Hot Reload
 

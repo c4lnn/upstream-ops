@@ -43,9 +43,23 @@ import { useTriggerRefresh } from "@/lib/refresh-context"
 import {
   syncAccountStream,
   syncAllAccountsStream,
+  syncSiteStream,
   testAccountLoginStream,
   type ProgressEvent,
+  type SyncSummary,
 } from "@/lib/sync-stream"
+import {
+  emptySyncViewState,
+  failSyncOperation,
+  operationProgressLabel,
+  operationSummaryLabel,
+  reduceSyncEvent,
+  siteProgressLabel,
+  startSiteSync,
+  startSyncOperation,
+  type AccountSyncState,
+  type SiteSyncState,
+} from "@/lib/sync-state"
 import { cn } from "@/lib/utils"
 import type {
   AccountRedeemResult,
@@ -93,12 +107,6 @@ function ratioTone(ratio: number): string {
   if (ratio > 2) return "bg-danger/10 text-danger ring-danger/20"
   if (ratio > 1.2) return "bg-warning/10 text-warning ring-warning/20"
   return "bg-muted text-foreground ring-border"
-}
-
-interface AccountSyncState {
-  running: boolean
-  latest: ProgressEvent | null
-  failed: boolean
 }
 
 function AccountSyncNotice({ state }: { state?: AccountSyncState }) {
@@ -202,6 +210,8 @@ function SiteHeader({
   onDelete,
   onSync,
   syncing,
+  disabled,
+  syncState,
 }: {
   site: UpstreamSite
   collapsed: boolean
@@ -211,15 +221,25 @@ function SiteHeader({
   onDelete: () => void
   onSync: () => void
   syncing: boolean
+  disabled: boolean
+  syncState?: SiteSyncState
 }) {
+  const progressLabel = siteProgressLabel(syncState)
   return (
     <div className="col-span-full border-y border-border bg-muted/10 px-3 py-3">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <button type="button" className="flex min-w-0 items-center gap-2 text-left" onClick={onToggle}>
-          <ChevronDown className={cn("size-4 shrink-0 text-muted-foreground transition-transform", collapsed && "-rotate-90")} />
-          <span className="truncate text-sm font-semibold text-foreground">{site.name}</span>
-          <span className="shrink-0 text-xs text-muted-foreground">{site.account_count} 个账号</span>
-        </button>
+        <div className="min-w-0">
+          <button type="button" className="flex min-w-0 items-center gap-2 text-left" onClick={onToggle}>
+            <ChevronDown className={cn("size-4 shrink-0 text-muted-foreground transition-transform", collapsed && "-rotate-90")} />
+            <span className="truncate text-sm font-semibold text-foreground">{site.name}</span>
+            <span className="shrink-0 text-xs text-muted-foreground">{site.account_count} 个账号</span>
+          </button>
+          {progressLabel ? (
+            <p className={cn("mt-1 truncate pl-6 text-xs", syncState?.failed ? "text-danger" : "text-muted-foreground")} title={progressLabel}>
+              {progressLabel}
+            </p>
+          ) : null}
+        </div>
         <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
           <span className="rounded bg-background px-1.5 py-0.5 font-medium text-foreground ring-1 ring-inset ring-border">
             {site.type === "newapi" ? "NewAPI" : "Sub2API"}
@@ -240,7 +260,7 @@ function SiteHeader({
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" title="新增账号" onClick={onCreateAccount}><Plus className="size-3.5" /></Button></TooltipTrigger><TooltipContent>新增账号</TooltipContent></Tooltip>
-          <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" title="同步站点账号" disabled={syncing} onClick={onSync}><RefreshCw className={cn("size-3.5", syncing && "animate-spin")} /></Button></TooltipTrigger><TooltipContent>同步站点账号</TooltipContent></Tooltip>
+          <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" title="同步站点" disabled={disabled} onClick={onSync}><RefreshCw className={cn("size-3.5", syncing && "animate-spin")} /></Button></TooltipTrigger><TooltipContent>同步站点</TooltipContent></Tooltip>
           <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" title="编辑站点" onClick={onEdit}><Pencil className="size-3.5" /></Button></TooltipTrigger><TooltipContent>编辑站点</TooltipContent></Tooltip>
           <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" title="删除站点" className="text-muted-foreground hover:text-destructive" onClick={onDelete}><Trash2 className="size-3.5" /></Button></TooltipTrigger><TooltipContent>删除站点</TooltipContent></Tooltip>
         </div>
@@ -264,9 +284,9 @@ export function SiteAccountList() {
   const [redeeming, setRedeeming] = useState<UpstreamAccount | null>(null)
   const [recharging, setRecharging] = useState<UpstreamAccount | null>(null)
   const [managingKeys, setManagingKeys] = useState<UpstreamAccount | null>(null)
-  const [syncState, setSyncState] = useState<Record<number, AccountSyncState>>({})
-  const [bulkSyncing, setBulkSyncing] = useState(false)
-  const [busy, setBusy] = useState<string | null>(null)
+  const [syncView, setSyncView] = useState(emptySyncViewState)
+  const [activeOperation, setActiveOperation] = useState<string | null>(null)
+  const [lastSyncScope, setLastSyncScope] = useState<"account" | "site" | "all" | null>(null)
   const timers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map())
 
   const accounts = accountsQuery.data ?? []
@@ -282,74 +302,113 @@ export function SiteAccountList() {
     return sites.map((site) => ({ site, accounts: bySite.get(site.id) ?? [] }))
   }, [accounts, sites])
   const total = accounts.length
-  const anySyncing = bulkSyncing || Object.values(syncState).some((state) => state.running)
+  const syncState = syncView.accounts
+  const anySyncing = activeOperation != null
+  const bulkSyncing = activeOperation === "all"
+  const bulkSummary = lastSyncScope === "all" ? operationSummaryLabel(syncView.operation.summary) : null
 
   useEffect(() => () => timers.current.forEach((timer) => clearTimeout(timer)), [])
 
   function updateSync(accountID: number, next: AccountSyncState) {
-    setSyncState((current) => ({ ...current, [accountID]: next }))
+    setSyncView((current) => ({ ...current, accounts: { ...current.accounts, [accountID]: next } }))
   }
 
   function dismissSync(accountID: number) {
     const timer = timers.current.get(accountID)
     if (timer) clearTimeout(timer)
     timers.current.set(accountID, setTimeout(() => {
-      setSyncState((current) => {
-        const next = { ...current }
+      setSyncView((current) => {
+        const next = { ...current.accounts }
         delete next[accountID]
-        return next
+        return { ...current, accounts: next }
       })
     }, 5000))
   }
 
   async function runAccountAction(account: UpstreamAccount, action: "sync" | "login") {
+    if (anySyncing) return
+    setActiveOperation(`${action}-${account.id}`)
+    if (action === "sync") {
+      setLastSyncScope("account")
+      setSyncView((current) => startSyncOperation(current))
+    }
     updateSync(account.id, { running: true, latest: { stage: "session", message: "准备中", time: new Date().toISOString() }, failed: false })
-    let failed = false
     try {
       await (action === "sync" ? syncAccountStream : testAccountLoginStream)(account.id, {
         onEvent: (event) => {
-          failed ||= event.stage === "error" || event.ok === false
-          updateSync(account.id, { running: event.stage !== "done" && event.stage !== "error", latest: event, failed })
+          const scopedEvent = event.scope ? event : { ...event, scope: "account" as const }
+          consumeSyncEvent(scopedEvent)
+          if (action === "login" && (scopedEvent.stage === "done" || scopedEvent.stage === "error")) dismissSync(account.id)
         },
       })
       dismissSync(account.id)
     } catch (reason) {
-      failed = true
-      updateSync(account.id, { running: false, failed, latest: { stage: "error", message: (reason as Error).message || "操作失败", time: new Date().toISOString() } })
+      const message = (reason as Error).message || "操作失败"
+      updateSync(account.id, { running: false, failed: true, latest: { stage: "error", message, time: new Date().toISOString() } })
+      setSyncView((current) => failSyncOperation(current, message))
     } finally {
+      setActiveOperation(null)
       refresh()
     }
   }
 
   async function runAllAccounts() {
-    if (accounts.length === 0) return
-    setBulkSyncing(true)
+    if (accounts.length === 0 || anySyncing) return
+    setActiveOperation("all")
+    setLastSyncScope("all")
+    setSyncView((current) => startSyncOperation(current, "准备同步全部…"))
     try {
       await syncAllAccountsStream({
-        onEvent: (event) => {
-          if (event.account_id == null) return
-          const failed = event.stage === "error" || event.ok === false
-          updateSync(event.account_id, { running: event.stage !== "done" && event.stage !== "error", latest: event, failed })
-          if (event.stage === "done") dismissSync(event.account_id)
-        },
+        onEvent: consumeSyncEvent,
       })
     } catch (reason) {
-      toast.error((reason as Error).message || "同步失败")
+      const message = (reason as Error).message || "同步失败"
+      setSyncView((current) => failSyncOperation(current, message))
+      toast.error(message)
     } finally {
-      setBulkSyncing(false)
+      setActiveOperation(null)
       refresh()
     }
   }
 
-  async function withBusy(key: string, action: () => Promise<unknown>) {
-    setBusy(key)
+  async function runSite(site: UpstreamSite) {
+    if (anySyncing) return
+    setActiveOperation(`site-${site.id}`)
+    setLastSyncScope("site")
+    setSyncView((current) => startSiteSync(current, site.id, site.name))
+    try {
+      await syncSiteStream(site.id, { onEvent: consumeSyncEvent })
+    } catch (reason) {
+      const message = (reason as Error).message || "同步失败"
+      setSyncView((current) => failSyncOperation(current, message))
+      toast.error(message)
+    } finally {
+      setActiveOperation(null)
+      refresh()
+    }
+  }
+
+  function consumeSyncEvent(event: ProgressEvent) {
+    setSyncView((current) => reduceSyncEvent(current, event))
+    if (event.scope === "operation" && event.data) {
+      for (const item of event.data.items) dismissSync(item.account_id)
+      notifySyncSummary(event.data)
+    }
+  }
+
+  function notifySyncSummary(summary: SyncSummary) {
+    const message = operationSummaryLabel(summary) ?? "同步完成"
+    if (summary.status === "success") toast.success(message)
+    else if (summary.status === "partial") toast.warning(message)
+    else toast.error(message)
+  }
+
+  async function withBusy(_key: string, action: () => Promise<unknown>) {
     try {
       await action()
       refresh()
     } catch (reason) {
       toast.error((reason as Error).message || "操作失败")
-    } finally {
-      setBusy(null)
     }
   }
 
@@ -380,6 +439,11 @@ export function SiteAccountList() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <SiteAccountBundleActions sites={sites} onImported={refresh} />
+          {lastSyncScope === "all" && (bulkSyncing || bulkSummary) ? (
+            <span className={cn("max-w-80 truncate text-xs", syncView.operation.summary?.status === "failed" ? "text-danger" : "text-muted-foreground")} title={operationProgressLabel(syncView.operation) ?? undefined}>
+              {operationProgressLabel(syncView.operation)}
+            </span>
+          ) : null}
           <Button variant="outline" size="sm" className="gap-1.5 text-xs" disabled={anySyncing || accounts.length === 0} onClick={() => void runAllAccounts()}>
             <RefreshCw className={cn("size-3.5", bulkSyncing && "animate-spin")} />同步全部
           </Button>
@@ -396,7 +460,7 @@ export function SiteAccountList() {
         </div>
       ) : total === 0 ? (
         <div className="space-y-3">
-          {sites.map((site) => <SiteHeader key={site.id} site={site} collapsed={false} onToggle={() => undefined} onCreateAccount={() => setCreatingAccountFor(site)} onEdit={() => setEditingSite(site)} onDelete={() => void deleteSite(site)} onSync={() => undefined} syncing={false} />)}
+          {sites.map((site) => <SiteHeader key={site.id} site={site} collapsed={false} onToggle={() => undefined} onCreateAccount={() => setCreatingAccountFor(site)} onEdit={() => setEditingSite(site)} onDelete={() => void deleteSite(site)} onSync={() => void runSite(site)} syncing={activeOperation === `site-${site.id}` || Boolean(syncView.sites[site.id]?.running)} disabled={anySyncing} syncState={syncView.sites[site.id]} />)}
           <p className="rounded-md border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">站点已创建，新增账号后即可登录和同步。</p>
         </div>
       ) : (
@@ -416,8 +480,10 @@ export function SiteAccountList() {
                   onCreateAccount={() => setCreatingAccountFor(site)}
                   onEdit={() => setEditingSite(site)}
                   onDelete={() => void deleteSite(site)}
-                  syncing={busy === `sync-site-${site.id}`}
-                  onSync={() => void withBusy(`sync-site-${site.id}`, async () => { await apiFetch(`/sites/${site.id}/sync`, { method: "POST" }); toast.success(`${site.name} 同步完成`) })}
+                  syncing={activeOperation === `site-${site.id}` || Boolean(syncView.sites[site.id]?.running)}
+                  disabled={anySyncing}
+                  syncState={syncView.sites[site.id]}
+                  onSync={() => void runSite(site)}
                 />
                 {!collapsed.has(site.id) && site.account_count === 0 ? (
                   <p className="col-span-full rounded-md border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">站点已创建，新增账号后即可登录和同步。</p>
@@ -467,8 +533,8 @@ export function SiteAccountList() {
                       <div className="mt-3 flex items-center justify-between gap-2 border-t border-border pt-3">
                         <span className="text-[11px] text-muted-foreground">{relativeTime(account.last_balance_at ?? account.updated_at)}</span>
                         <div className="flex items-center gap-1">
-                          <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" title="同步账号" disabled={syncState[account.id]?.running} onClick={() => void runAccountAction(account, "sync")}><RefreshCw className={cn("size-3.5", syncState[account.id]?.running && "animate-spin")} /></Button></TooltipTrigger><TooltipContent>同步账号</TooltipContent></Tooltip>
-                          <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" title="测试登录" disabled={syncState[account.id]?.running} onClick={() => void runAccountAction(account, "login")}><LogIn className="size-3.5" /></Button></TooltipTrigger><TooltipContent>测试登录</TooltipContent></Tooltip>
+                          <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" title="同步账号" disabled={anySyncing} onClick={() => void runAccountAction(account, "sync")}><RefreshCw className={cn("size-3.5", syncState[account.id]?.running && "animate-spin")} /></Button></TooltipTrigger><TooltipContent>同步账号</TooltipContent></Tooltip>
+                          <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" title="测试登录" disabled={anySyncing} onClick={() => void runAccountAction(account, "login")}><LogIn className="size-3.5" /></Button></TooltipTrigger><TooltipContent>测试登录</TooltipContent></Tooltip>
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="账号操作"><MoreHorizontal className="size-3.5" /></Button></DropdownMenuTrigger>
                             <DropdownMenuContent align="end" className="w-44">

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/bejix/upstream-ops/backend/monitor"
+	"github.com/bejix/upstream-ops/backend/progress"
 	"github.com/bejix/upstream-ops/backend/storage"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -21,6 +22,7 @@ func registerSites(g *gin.RouterGroup, d *Deps) {
 	gp.PUT("/:site_id", func(c *gin.Context) { updateSite(c, d) })
 	gp.DELETE("/:site_id", func(c *gin.Context) { deleteSite(c, d) })
 	gp.POST("/:site_id/sync", func(c *gin.Context) { syncSite(c, d) })
+	gp.POST("/:site_id/sync-stream", func(c *gin.Context) { syncSiteStream(c, d) })
 	gp.POST("/:site_id/accounts", func(c *gin.Context) { createSiteAccount(c, d) })
 	gp.POST("/:site_id/default-account", func(c *gin.Context) { setDefaultSiteAccount(c, d) })
 }
@@ -217,11 +219,32 @@ func syncSite(c *gin.Context, d *Deps) {
 		return
 	}
 	results, syncErr := service.SyncSite(c.Request.Context(), siteID)
-	response := gin.H{"items": results, "partial": syncErr != nil}
+	summary := monitor.NewSyncSummary(results, syncErr)
+	response := gin.H{
+		"items": results, "partial": summary.Status != "success", "status": summary.Status,
+		"success_count": summary.SuccessCount, "failed_count": summary.FailedCount,
+	}
 	if syncErr != nil {
 		response["error"] = syncErr.Error()
 	}
 	c.JSON(http.StatusOK, gin.H{"data": response})
+}
+
+func syncSiteStream(c *gin.Context, d *Deps) {
+	siteID, err := uintParam(c, "site_id")
+	if err != nil {
+		fail(c, http.StatusBadRequest, err)
+		return
+	}
+	service, ok := d.Monitor.(siteSyncService)
+	if !ok {
+		fail(c, http.StatusServiceUnavailable, errors.New("站点批量同步未配置"))
+		return
+	}
+	obs := setupSSE(c)
+	ctx := progress.WithObserver(c.Request.Context(), obs)
+	results, syncErr := service.SyncSite(ctx, siteID)
+	emitSyncSummary(obs, monitor.NewSyncSummary(results, syncErr))
 }
 
 func createSiteAccount(c *gin.Context, d *Deps) {

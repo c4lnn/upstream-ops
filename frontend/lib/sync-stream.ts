@@ -19,12 +19,32 @@ export interface ProgressEvent {
   stage: ProgressStage
   message: string
   ok?: boolean
-  data?: unknown
+  data?: SyncSummary
   time: string
+  scope?: "account" | "site" | "operation"
   account_id?: number
   account_alias?: string
   index?: number
   total?: number
+  site_id?: number
+  site_name?: string
+  site_index?: number
+  site_total?: number
+}
+
+export interface SyncAccountResult {
+  account_id: number
+  account_name: string
+  success: boolean
+  error?: string
+}
+
+export interface SyncSummary {
+  status: "success" | "partial" | "failed"
+  success_count: number
+  failed_count: number
+  items: SyncAccountResult[]
+  error?: string
 }
 
 export interface SyncOptions {
@@ -109,9 +129,14 @@ export function syncAccountStream(accountID: number, options: SyncOptions) {
   return streamSSE(`/api/accounts/${accountID}/sync`, options)
 }
 
-/** 触发 /api/accounts/sync-all（余额 + 消费，逐账号串行）。 */
+/** 触发 /api/accounts/sync-all（按站点完整同步余额、消费、订阅和倍率）。 */
 export function syncAllAccountsStream(options: SyncOptions) {
   return streamSSE("/api/accounts/sync-all", options)
+}
+
+/** 触发站点内全部账号的完整同步，并逐账号返回进度。 */
+export function syncSiteStream(siteID: number, options: SyncOptions) {
+  return streamSSE(`/api/sites/${siteID}/sync-stream`, options)
 }
 
 /** 触发 /api/accounts/:account_id/test-login（仅登录验证，session 落库以便后续 sync 复用）。 */

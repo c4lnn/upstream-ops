@@ -279,10 +279,95 @@ type rateScanResult struct {
 }
 
 type SiteAccountSyncResult struct {
-	AccountID   uint   `json:"account_id"`
-	AccountName string `json:"account_name"`
-	Success     bool   `json:"success"`
-	Error       string `json:"error,omitempty"`
+	AccountID   uint              `json:"account_id"`
+	AccountName string            `json:"account_name"`
+	Success     bool              `json:"success"`
+	Error       string            `json:"error,omitempty"`
+	Stages      []SyncStageResult `json:"stages,omitempty"`
+}
+
+type SyncStageResult struct {
+	Stage   progress.Stage `json:"stage"`
+	Success bool           `json:"success"`
+	Error   string         `json:"error,omitempty"`
+}
+
+type SyncSummary struct {
+	Status       string                  `json:"status"`
+	SuccessCount int                     `json:"success_count"`
+	FailedCount  int                     `json:"failed_count"`
+	Items        []SiteAccountSyncResult `json:"items"`
+	Error        string                  `json:"error,omitempty"`
+}
+
+type stageResultObserver struct {
+	base    progress.Observer
+	results map[progress.Stage]SyncStageResult
+}
+
+func newStageResultObserver(base progress.Observer) *stageResultObserver {
+	return &stageResultObserver{base: base, results: make(map[progress.Stage]SyncStageResult)}
+}
+
+func (o *stageResultObserver) Emit(ev progress.Event) {
+	o.base.Emit(ev)
+	if ev.OK == nil || ev.Stage == progress.StageDone || ev.Stage == progress.StageError {
+		return
+	}
+	result := SyncStageResult{Stage: ev.Stage, Success: *ev.OK}
+	if !*ev.OK {
+		result.Error = ev.Message
+	}
+	o.results[ev.Stage] = result
+}
+
+func (o *stageResultObserver) list() []SyncStageResult {
+	order := []progress.Stage{progress.StageBalance, progress.StageCost, progress.StageSubscription, progress.StageRates}
+	out := make([]SyncStageResult, 0, len(o.results))
+	for _, stage := range order {
+		if result, ok := o.results[stage]; ok {
+			out = append(out, result)
+		}
+	}
+	return out
+}
+
+func NewSyncSummary(items []SiteAccountSyncResult, err error) SyncSummary {
+	summary := SyncSummary{Items: items}
+	for _, item := range items {
+		if item.Success {
+			summary.SuccessCount++
+		} else {
+			summary.FailedCount++
+		}
+	}
+	if err != nil {
+		summary.Error = err.Error()
+	}
+	switch {
+	case summary.FailedCount == 0 && err == nil:
+		summary.Status = "success"
+	case summary.SuccessCount > 0:
+		summary.Status = "partial"
+	default:
+		summary.Status = "failed"
+	}
+	return summary
+}
+
+func (s *Service) SyncAccount(ctx context.Context, accountID uint) ([]SiteAccountSyncResult, error) {
+	account, err := s.accounts.FindByID(accountID)
+	if err != nil {
+		return nil, err
+	}
+	if s.sites == nil {
+		return nil, errors.New("站点服务未配置")
+	}
+	site, err := s.sites.FindByID(account.SiteID)
+	if err != nil {
+		return nil, err
+	}
+	return s.syncSiteBatch(ctx, site, []storage.UpstreamAccount{*account}, 1, 1)
 }
 
 // SyncSite 手动刷新站点内全部账号。各账号独立成功或失败，倍率变化在站点批次结束后聚合。
@@ -298,38 +383,98 @@ func (s *Service) SyncSite(ctx context.Context, siteID uint) ([]SiteAccountSyncR
 	if err != nil {
 		return nil, err
 	}
+	return s.syncSiteBatch(ctx, site, accounts, 1, 1)
+}
+
+func (s *Service) SyncAll(ctx context.Context) ([]SiteAccountSyncResult, error) {
+	if s.sites == nil {
+		return nil, errors.New("站点服务未配置")
+	}
+	sites, err := s.sites.List()
+	if err != nil {
+		return nil, err
+	}
+	allResults := make([]SiteAccountSyncResult, 0)
+	batchErrors := make([]error, 0)
+	for index := range sites {
+		site := sites[index]
+		accounts, listErr := s.sites.ListAccounts(site.ID)
+		if listErr != nil {
+			batchErrors = append(batchErrors, fmt.Errorf("%s：%w", site.Name, listErr))
+			continue
+		}
+		results, syncErr := s.syncSiteBatch(ctx, &site, accounts, index+1, len(sites))
+		allResults = append(allResults, results...)
+		if syncErr != nil {
+			batchErrors = append(batchErrors, fmt.Errorf("%s：%w", site.Name, syncErr))
+		}
+	}
+	return allResults, errors.Join(batchErrors...)
+}
+
+func (s *Service) syncSiteBatch(ctx context.Context, site *storage.UpstreamSite, accounts []storage.UpstreamAccount, siteIndex, siteTotal int) ([]SiteAccountSyncResult, error) {
+	siteCtx := progress.WithScope(ctx, progress.Scope{
+		Level: "site", SiteID: site.ID, SiteName: site.Name, SiteIndex: siteIndex, SiteTotal: siteTotal,
+	})
 	scanRunID := newRateScanRunID()
 	results := make([]SiteAccountSyncResult, 0, len(accounts))
 	var rateChanges, structureChanges []notify.SiteRateChange
 	failures := make([]string, 0)
 	for i := range accounts {
 		account := accounts[i]
-		balanceErr := s.RefreshBalance(ctx, &account)
+		accountCtx := progress.WithScope(siteCtx, progress.Scope{
+			Level: "account", AccountID: account.ID, AccountAlias: account.Alias, Index: i + 1, Total: len(accounts),
+		})
+		recorder := newStageResultObserver(progress.FromContext(accountCtx))
+		accountCtx = progress.WithObserver(accountCtx, recorder)
+		balanceErr := s.RefreshBalance(accountCtx, &account)
 		var subscriptionErr error
 		if balanceErr == nil {
-			subscriptionErr = s.CheckSubscriptionUsageAlerts(ctx, &account)
+			subscriptionErr = s.CheckSubscriptionUsageAlerts(accountCtx, &account)
 		}
-		rateResult, rateErr := s.collectRateChanges(ctx, &account, scanRunID)
+		rateResult, rateErr := s.collectRateChanges(accountCtx, &account, scanRunID)
 		rateChanges = append(rateChanges, rateResult.RateChanges...)
 		structureChanges = append(structureChanges, rateResult.StructureChanges...)
-		combinedErr := errors.Join(balanceErr, subscriptionErr, rateErr)
-		item := SiteAccountSyncResult{AccountID: account.ID, AccountName: account.Alias, Success: combinedErr == nil}
+		combinedErr := joinDistinctErrors(balanceErr, subscriptionErr, rateErr)
+		item := SiteAccountSyncResult{AccountID: account.ID, AccountName: account.Alias, Success: combinedErr == nil, Stages: recorder.list()}
 		if combinedErr != nil {
 			item.Error = combinedErr.Error()
 			failures = append(failures, fmt.Sprintf("%s：%v", account.Alias, combinedErr))
+			progress.Fail(accountCtx, progress.StageError, "同步失败："+combinedErr.Error())
+		} else {
+			progress.OK(accountCtx, progress.StageDone, "同步完成")
 		}
 		results = append(results, item)
 	}
 	if len(rateChanges) > 0 {
-		_ = s.dispatcher.DispatchSiteRateBatch(ctx, *site, rateChanges, failures)
+		_ = s.dispatcher.DispatchSiteRateBatch(siteCtx, *site, rateChanges, failures)
 	}
 	if len(structureChanges) > 0 {
-		_ = s.dispatcher.DispatchSiteRateStructureBatch(ctx, *site, structureChanges, failures)
+		_ = s.dispatcher.DispatchSiteRateStructureBatch(siteCtx, *site, structureChanges, failures)
 	}
-	if err := s.syncSiteAnnouncements(ctx, site); err != nil {
+	if err := s.syncSiteAnnouncements(siteCtx, site); err != nil {
 		failures = append(failures, "公告："+err.Error())
 	}
-	return results, errors.Join(stringsToErrors(failures)...)
+	batchErr := errors.Join(stringsToErrors(failures)...)
+	summary := NewSyncSummary(results, batchErr)
+	message := syncSummaryMessage(summary)
+	if summary.Status == "success" {
+		progress.OK(siteCtx, progress.StageDone, message, summary)
+	} else {
+		progress.Fail(siteCtx, progress.StageError, message)
+	}
+	return results, batchErr
+}
+
+func syncSummaryMessage(summary SyncSummary) string {
+	switch summary.Status {
+	case "success":
+		return fmt.Sprintf("同步完成 · 成功 %d", summary.SuccessCount)
+	case "partial":
+		return fmt.Sprintf("部分同步完成 · 成功 %d / 失败 %d", summary.SuccessCount, summary.FailedCount)
+	default:
+		return fmt.Sprintf("同步失败 · 失败 %d", summary.FailedCount)
+	}
 }
 
 func stringsToErrors(items []string) []error {
@@ -338,6 +483,23 @@ func stringsToErrors(items []string) []error {
 		out = append(out, errors.New(item))
 	}
 	return out
+}
+
+func joinDistinctErrors(items ...error) error {
+	seen := make(map[string]struct{}, len(items))
+	unique := make([]error, 0, len(items))
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		message := item.Error()
+		if _, exists := seen[message]; exists {
+			continue
+		}
+		seen[message] = struct{}{}
+		unique = append(unique, item)
+	}
+	return errors.Join(unique...)
 }
 
 func newRateScanRunID() string {

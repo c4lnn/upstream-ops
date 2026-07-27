@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/bejix/upstream-ops/backend/account"
 	"github.com/bejix/upstream-ops/backend/connector"
+	"github.com/bejix/upstream-ops/backend/monitor"
 	"github.com/bejix/upstream-ops/backend/progress"
 	"github.com/bejix/upstream-ops/backend/storage"
 	"github.com/gin-gonic/gin"
@@ -809,6 +811,14 @@ func syncAccount(c *gin.Context, d *Deps) {
 	}
 
 	obs := setupSSE(c)
+	if service, ok := d.Monitor.(interface {
+		SyncAccount(context.Context, uint) ([]monitor.SiteAccountSyncResult, error)
+	}); ok {
+		ctx := progress.WithObserver(c.Request.Context(), obs)
+		items, syncErr := service.SyncAccount(ctx, id)
+		emitSyncSummary(obs, monitor.NewSyncSummary(items, syncErr))
+		return
+	}
 	ctx := progress.WithObserver(c.Request.Context(), accountScopedObserver{
 		base:         obs,
 		accountID:    ch.ID,
@@ -833,6 +843,15 @@ func syncAccount(c *gin.Context, d *Deps) {
 }
 
 func syncAllAccounts(c *gin.Context, d *Deps) {
+	if service, ok := d.Monitor.(interface {
+		SyncAll(context.Context) ([]monitor.SiteAccountSyncResult, error)
+	}); ok {
+		obs := setupSSE(c)
+		ctx := progress.WithObserver(c.Request.Context(), obs)
+		items, syncErr := service.SyncAll(ctx)
+		emitSyncSummary(obs, monitor.NewSyncSummary(items, syncErr))
+		return
+	}
 	list, err := d.Accounts.List()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err)
@@ -900,6 +919,20 @@ func syncAllAccounts(c *gin.Context, d *Deps) {
 		Stage:   stage,
 		Message: summary,
 		Time:    time.Now(),
+	})
+}
+
+func emitSyncSummary(obs progress.Observer, summary monitor.SyncSummary) {
+	ok := summary.Status == "success"
+	message := fmt.Sprintf("同步完成 · 成功 %d", summary.SuccessCount)
+	if summary.Status == "partial" {
+		message = fmt.Sprintf("部分同步完成 · 成功 %d / 失败 %d", summary.SuccessCount, summary.FailedCount)
+	} else if summary.Status == "failed" {
+		message = fmt.Sprintf("同步失败 · 失败 %d", summary.FailedCount)
+	}
+	obs.Emit(progress.Event{
+		Stage: progress.StageDone, Message: message, OK: &ok, Data: summary,
+		Time: time.Now(), Scope: "operation",
 	})
 }
 

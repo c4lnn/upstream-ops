@@ -31,10 +31,27 @@ type Event struct {
 	OK           *bool     `json:"ok,omitempty"`
 	Data         any       `json:"data,omitempty"`
 	Time         time.Time `json:"time"`
+	Scope        string    `json:"scope,omitempty"`
 	AccountID    uint      `json:"account_id,omitempty"`
 	AccountAlias string    `json:"account_alias,omitempty"`
 	Index        int       `json:"index,omitempty"`
 	Total        int       `json:"total,omitempty"`
+	SiteID       uint      `json:"site_id,omitempty"`
+	SiteName     string    `json:"site_name,omitempty"`
+	SiteIndex    int       `json:"site_index,omitempty"`
+	SiteTotal    int       `json:"site_total,omitempty"`
+}
+
+type Scope struct {
+	Level        string
+	AccountID    uint
+	AccountAlias string
+	Index        int
+	Total        int
+	SiteID       uint
+	SiteName     string
+	SiteIndex    int
+	SiteTotal    int
 }
 
 // Observer 消费进度事件。
@@ -63,6 +80,34 @@ func FromContext(ctx context.Context) Observer {
 		return obs
 	}
 	return NopObserver{}
+}
+
+type scopedObserver struct {
+	base  Observer
+	scope Scope
+}
+
+func (o scopedObserver) Emit(ev Event) {
+	if ev.Scope == "" {
+		ev.Scope = o.scope.Level
+	}
+	if ev.AccountID == 0 {
+		ev.AccountID = o.scope.AccountID
+		ev.AccountAlias = o.scope.AccountAlias
+		ev.Index = o.scope.Index
+		ev.Total = o.scope.Total
+	}
+	if ev.SiteID == 0 {
+		ev.SiteID = o.scope.SiteID
+		ev.SiteName = o.scope.SiteName
+		ev.SiteIndex = o.scope.SiteIndex
+		ev.SiteTotal = o.scope.SiteTotal
+	}
+	o.base.Emit(ev)
+}
+
+func WithScope(ctx context.Context, scope Scope) context.Context {
+	return WithObserver(ctx, scopedObserver{base: FromContext(ctx), scope: scope})
 }
 
 // Start 发送一条"进行中"事件。
