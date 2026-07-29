@@ -10,17 +10,26 @@ import {
   type ReactNode,
 } from "react"
 import { RefreshRequestTracker } from "@/lib/refresh-tracker"
+import {
+  advanceRefreshVersion,
+  initialRefreshVersions,
+  isTrackedRefresh,
+  refreshVersionKey,
+  type RefreshOptions,
+  type RefreshScope,
+  type RefreshVersions,
+} from "@/lib/refresh-scopes"
 
 interface RefreshContextValue {
-  tick: number
-  bump: (options?: { notify?: boolean }) => void
+  versions: RefreshVersions
+  bump: (options?: RefreshOptions) => void
   refreshing: boolean
   result: { cycle: number; status: "success" | "failed" } | null
   trackRequest: (tick: number, request: Promise<unknown>) => void
 }
 
 const RefreshContext = createContext<RefreshContextValue>({
-  tick: 0,
+  versions: initialRefreshVersions,
   bump: () => {},
   refreshing: false,
   result: null,
@@ -31,7 +40,7 @@ const RefreshContext = createContext<RefreshContextValue>({
 const POLL_INTERVAL_MS = 30_000
 
 export function RefreshProvider({ children }: { children: ReactNode }) {
-  const [tick, setTick] = useState(0)
+  const [versions, setVersions] = useState(initialRefreshVersions)
   const [refreshing, setRefreshing] = useState(false)
   const [result, setResult] = useState<RefreshContextValue["result"]>(null)
   const tickRef = useRef(0)
@@ -47,13 +56,17 @@ export function RefreshProvider({ children }: { children: ReactNode }) {
     })
   }
 
-  const bump = useCallback((options?: { notify?: boolean }) => {
+  const bump = useCallback((options?: RefreshOptions) => {
+    if (!isTrackedRefresh(options)) {
+      setVersions((current) => advanceRefreshVersion(current, options?.scope))
+      return
+    }
     const next = ++tickRef.current
     notifyRef.current = options?.notify === true
     trackerRef.current?.start(next)
     refreshingRef.current = true
     setRefreshing(true)
-    setTick(next)
+    setVersions((current) => advanceRefreshVersion(current))
 
     // 页面没有活动查询时也必须结束本轮刷新。
     setTimeout(() => {
@@ -72,14 +85,14 @@ export function RefreshProvider({ children }: { children: ReactNode }) {
     const id = setInterval(() => {
       if (typeof document !== "undefined" && document.hidden) return
       if (refreshingRef.current) return
-      const next = ++tickRef.current
-      setTick(next)
+      ++tickRef.current
+      setVersions((current) => advanceRefreshVersion(current))
     }, POLL_INTERVAL_MS)
     return () => clearInterval(id)
   }, [])
 
   return (
-    <RefreshContext.Provider value={{ tick, bump, refreshing, result, trackRequest }}>
+    <RefreshContext.Provider value={{ versions, bump, refreshing, result, trackRequest }}>
       {children}
     </RefreshContext.Provider>
   )
@@ -87,7 +100,11 @@ export function RefreshProvider({ children }: { children: ReactNode }) {
 
 /** useRefreshTick 在 tick 变化时让组件重新拉数据。 */
 export function useRefreshTick() {
-  return useContext(RefreshContext).tick
+  return useContext(RefreshContext).versions.global
+}
+
+export function useRefreshVersion(scope?: RefreshScope) {
+  return refreshVersionKey(useContext(RefreshContext).versions, scope)
 }
 
 /** useTriggerRefresh 返回手动 bump 的方法，比如点头部的"刷新"按钮。 */

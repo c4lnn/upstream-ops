@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from "react"
 import { apiFetch } from "@/lib/api"
-import { useRefreshTick, useTrackRefreshRequest } from "@/lib/refresh-context"
+import { useRefreshTick, useRefreshVersion, useTrackRefreshRequest } from "@/lib/refresh-context"
+import type { RefreshScope } from "@/lib/refresh-scopes"
 import type {
   AppVersion,
   BalanceTrendPoint,
@@ -43,8 +44,8 @@ interface CacheEntry {
 const cache = new Map<string, CacheEntry>()
 const CACHE_TTL_MS = 800
 
-function cacheKey(path: string, tick: number, bump: number) {
-  return `${path}#${tick}#${bump}`
+function cacheKey(path: string, refreshVersion: string | number, bump: number) {
+  return `${path}#${refreshVersion}#${bump}`
 }
 
 function fetchShared<T>(path: string, key: string): Promise<T> {
@@ -77,14 +78,20 @@ function fetchShared<T>(path: string, key: string): Promise<T> {
  * - 后续刷新（refresh tick / refetch）：保留旧 data 继续展示，loading 不切回 true，后台静默拉新
  * - 同 URL + 同 tick 的并发调用共享一次请求
  */
-function useApi<T>(path: string | null, watchRefresh = true): QueryState<T> {
+function useApi<T>(
+  path: string | null,
+  watchRefresh = true,
+  refreshScope?: RefreshScope,
+): QueryState<T> {
   const [data, setData] = useState<T | null>(null)
   const [loading, setLoading] = useState<boolean>(path !== null)
   const [error, setError] = useState<string | null>(null)
   const [bump, setBump] = useState(0)
   const refreshTick = useRefreshTick()
+  const refreshVersion = useRefreshVersion(watchRefresh ? refreshScope : undefined)
   const trackRefreshRequest = useTrackRefreshRequest()
-  const globalTick = watchRefresh ? refreshTick : 0
+  const requestVersion = watchRefresh ? refreshVersion : "0"
+  const lastTrackedTickRef = useRef(0)
 
   // 已经拿到过数据吗？用 ref 防止 setLoading 写回触发额外 effect。
   const hasDataRef = useRef(false)
@@ -99,8 +106,11 @@ function useApi<T>(path: string | null, watchRefresh = true): QueryState<T> {
     // 避免组件因 loading=true 短暂消失再回来造成"闪屏"。
     if (!hasDataRef.current) setLoading(true)
     setError(null)
-    const request = fetchShared<T>(path, cacheKey(path, globalTick, bump))
-    if (watchRefresh) trackRefreshRequest(globalTick, request)
+    const request = fetchShared<T>(path, cacheKey(path, requestVersion, bump))
+    if (watchRefresh && refreshTick > lastTrackedTickRef.current) {
+      lastTrackedTickRef.current = refreshTick
+      trackRefreshRequest(refreshTick, request)
+    }
     request
       .then((d) => {
         if (cancelled) return
@@ -118,7 +128,7 @@ function useApi<T>(path: string | null, watchRefresh = true): QueryState<T> {
     return () => {
       cancelled = true
     }
-  }, [path, bump, globalTick, trackRefreshRequest, watchRefresh])
+  }, [path, bump, refreshTick, requestVersion, trackRefreshRequest, watchRefresh])
 
   return {
     data,
@@ -133,7 +143,7 @@ function useApi<T>(path: string | null, watchRefresh = true): QueryState<T> {
 }
 
 export function useDashboardSummary() {
-  return useApi<DashboardSummary>("/dashboard/summary")
+  return useApi<DashboardSummary>("/dashboard/summary", true, "monitor-snapshots")
 }
 
 export function useAppVersion() {
@@ -141,19 +151,19 @@ export function useAppVersion() {
 }
 
 export function useBalanceTrend(days = 7) {
-  return useApi<BalanceTrendPoint[]>(`/dashboard/balance-trend?days=${days}`)
+  return useApi<BalanceTrendPoint[]>(`/dashboard/balance-trend?days=${days}`, true, "monitor-snapshots")
 }
 
 export function useCostTrend(days = 7) {
-  return useApi<CostTrendPoint[]>(`/dashboard/cost-trend?days=${days}`)
+  return useApi<CostTrendPoint[]>(`/dashboard/cost-trend?days=${days}`, true, "monitor-snapshots")
 }
 
 export function useAccounts() {
-  return useApi<UpstreamAccount[]>("/accounts")
+  return useApi<UpstreamAccount[]>("/accounts", true, "monitor-snapshots")
 }
 
 export function useSites() {
-  return useApi<UpstreamSite[]>("/sites")
+  return useApi<UpstreamSite[]>("/sites", true, "monitor-snapshots")
 }
 
 export function useAccountRates(accountID: number | null) {

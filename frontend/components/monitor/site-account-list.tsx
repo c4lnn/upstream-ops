@@ -41,6 +41,10 @@ import {
 } from "@/lib/queries"
 import { useTriggerRefresh } from "@/lib/refresh-context"
 import {
+  isAccountTerminalEvent,
+  ProgressiveRefreshScheduler,
+} from "@/lib/progressive-refresh"
+import {
   syncAccountStream,
   syncAllAccountsStream,
   syncSiteStream,
@@ -273,6 +277,12 @@ export function SiteAccountList() {
   const accountsQuery = useAccounts()
   const sitesQuery = useSites()
   const refresh = useTriggerRefresh()
+  const progressiveRefresh = useRef<ProgressiveRefreshScheduler | null>(null)
+  if (progressiveRefresh.current == null) {
+    progressiveRefresh.current = new ProgressiveRefreshScheduler(() => {
+      refresh({ scope: "monitor-snapshots" })
+    })
+  }
   const { confirm, dialog: confirmDialog } = useConfirm()
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set())
   const [editingAccount, setEditingAccount] = useState<UpstreamAccount | null>(null)
@@ -307,7 +317,10 @@ export function SiteAccountList() {
   const bulkSyncing = activeOperation === "all"
   const bulkSummary = lastSyncScope === "all" ? operationSummaryLabel(syncView.operation.summary) : null
 
-  useEffect(() => () => timers.current.forEach((timer) => clearTimeout(timer)), [])
+  useEffect(() => () => {
+    timers.current.forEach((timer) => clearTimeout(timer))
+    progressiveRefresh.current?.cancel()
+  }, [])
 
   function updateSync(accountID: number, next: AccountSyncState) {
     setSyncView((current) => ({ ...current, accounts: { ...current.accounts, [accountID]: next } }))
@@ -323,6 +336,12 @@ export function SiteAccountList() {
         return { ...current, accounts: next }
       })
     }, 5000))
+  }
+
+  function finalizePageRefresh() {
+    const scheduler = progressiveRefresh.current
+    if (scheduler) scheduler.finalize(refresh)
+    else refresh()
   }
 
   async function runAccountAction(account: UpstreamAccount, action: "sync" | "login") {
@@ -359,15 +378,15 @@ export function SiteAccountList() {
     setSyncView((current) => startSyncOperation(current, "准备同步全部…"))
     try {
       await syncAllAccountsStream({
-        onEvent: consumeSyncEvent,
+        onEvent: consumeBatchSyncEvent,
       })
     } catch (reason) {
       const message = (reason as Error).message || "同步失败"
       setSyncView((current) => failSyncOperation(current, message))
       toast.error(message)
     } finally {
+      finalizePageRefresh()
       setActiveOperation(null)
-      refresh()
     }
   }
 
@@ -377,14 +396,14 @@ export function SiteAccountList() {
     setLastSyncScope("site")
     setSyncView((current) => startSiteSync(current, site.id, site.name))
     try {
-      await syncSiteStream(site.id, { onEvent: consumeSyncEvent })
+      await syncSiteStream(site.id, { onEvent: consumeBatchSyncEvent })
     } catch (reason) {
       const message = (reason as Error).message || "同步失败"
       setSyncView((current) => failSyncOperation(current, message))
       toast.error(message)
     } finally {
+      finalizePageRefresh()
       setActiveOperation(null)
-      refresh()
     }
   }
 
@@ -394,6 +413,11 @@ export function SiteAccountList() {
       for (const item of event.data.items) dismissSync(item.account_id)
       notifySyncSummary(event.data)
     }
+  }
+
+  function consumeBatchSyncEvent(event: ProgressEvent) {
+    consumeSyncEvent(event)
+    if (isAccountTerminalEvent(event)) progressiveRefresh.current?.schedule()
   }
 
   function notifySyncSummary(summary: SyncSummary) {
