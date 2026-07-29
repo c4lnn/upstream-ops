@@ -111,27 +111,106 @@ func (c *Client) Login(ctx context.Context, ch *connector.AccountTarget) (*conne
 	}
 
 	var data struct {
-		Require2FA bool  `json:"require_2fa"`
-		ID         int64 `json:"id"`
+		Require2FA      bool   `json:"require_2fa"`
+		ID              int64  `json:"id"`
+		AccessToken     string `json:"access_token"`
+		AccessExpiresAt int64  `json:"access_expires_at"`
+		User            struct {
+			ID int64 `json:"id"`
+		} `json:"user"`
 	}
-	_ = json.Unmarshal(wrapped.Data, &data)
+	if err := json.Unmarshal(wrapped.Data, &data); err != nil {
+		return nil, fmt.Errorf("newapi login data decode: %w", err)
+	}
 	if data.Require2FA {
 		return nil, errors.New("newapi account requires 2FA; please disable it for monitoring accounts")
 	}
+	if data.ID == 0 {
+		data.ID = data.User.ID
+	}
 
 	cookie := joinCookies(resp.Cookies())
-	if cookie == "" {
-		return nil, errors.New("newapi login: no session cookie returned")
+	accessToken := strings.TrimSpace(data.AccessToken)
+	if cookie == "" && accessToken == "" {
+		return nil, errors.New("newapi login: no authentication credential returned")
 	}
 	if data.ID == 0 {
 		// 用户 id 是后续 New-Api-User 头的必需值；缺失说明响应格式不对。
 		return nil, errors.New("newapi login: missing user id in response")
 	}
-	// NewAPI session 默认有效期较长，保守按 7 天估算；CheckAuth 会兜底失效检测。
+	expiresAt := time.Now().Add(7 * 24 * time.Hour)
+	if data.AccessExpiresAt > 0 {
+		expiresAt = time.Unix(data.AccessExpiresAt, 0)
+	}
 	return &connector.AuthSession{
-		UserID:    strconv.FormatInt(data.ID, 10),
-		Cookie:    cookie,
-		ExpiresAt: time.Now().Add(7 * 24 * time.Hour),
+		UserID:       strconv.FormatInt(data.ID, 10),
+		AccessToken:  accessToken,
+		RefreshToken: cookieValue(resp.Cookies(), "new_api_refresh"),
+		Cookie:       cookie,
+		ExpiresAt:    expiresAt,
+	}, nil
+}
+
+func (c *Client) RefreshSession(ctx context.Context, ch *connector.AccountTarget, session *connector.AuthSession) (*connector.AuthSession, error) {
+	if session == nil || strings.TrimSpace(session.RefreshToken) == "" {
+		return nil, errors.New("newapi refresh: missing refresh token")
+	}
+	site := strings.TrimRight(ch.BaseURL, "/")
+	resp, err := c.http.R().
+		SetContext(ctx).
+		SetHeader("Origin", site).
+		SetHeader("Cookie", "new_api_refresh="+session.RefreshToken).
+		Post(site + "/api/user/auth/refresh")
+	if err != nil {
+		return nil, fmt.Errorf("newapi refresh http: %w", err)
+	}
+	if resp.IsError() {
+		return nil, fmt.Errorf("newapi refresh: %w", connector.HTTPStatusError(resp.StatusCode(), resp.Body()))
+	}
+
+	var wrapped newapiResp
+	if err := json.Unmarshal(resp.Body(), &wrapped); err != nil {
+		return nil, fmt.Errorf("newapi refresh decode: %w", err)
+	}
+	if !wrapped.Success {
+		return nil, fmt.Errorf("newapi refresh: %s", wrapped.Message)
+	}
+	var data struct {
+		AccessToken     string `json:"access_token"`
+		AccessExpiresAt int64  `json:"access_expires_at"`
+		User            struct {
+			ID int64 `json:"id"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(wrapped.Data, &data); err != nil {
+		return nil, fmt.Errorf("newapi refresh data decode: %w", err)
+	}
+	if strings.TrimSpace(data.AccessToken) == "" {
+		return nil, errors.New("newapi refresh: missing access token in response")
+	}
+
+	userID := strings.TrimSpace(session.UserID)
+	if data.User.ID > 0 {
+		userID = strconv.FormatInt(data.User.ID, 10)
+	}
+	refreshToken := cookieValue(resp.Cookies(), "new_api_refresh")
+	if refreshToken == "" {
+		refreshToken = session.RefreshToken
+	}
+	cookie := joinCookies(resp.Cookies())
+	if cookie == "" {
+		cookie = "new_api_refresh=" + refreshToken
+	}
+	expiresAt := time.Now().Add(15 * time.Minute)
+	if data.AccessExpiresAt > 0 {
+		expiresAt = time.Unix(data.AccessExpiresAt, 0)
+	}
+	return &connector.AuthSession{
+		UserID:       userID,
+		AccessToken:  strings.TrimSpace(data.AccessToken),
+		RefreshToken: refreshToken,
+		Cookie:       cookie,
+		ExpiresAt:    expiresAt,
 	}, nil
 }
 
@@ -157,18 +236,18 @@ func newAPIHasAuth(session *connector.AuthSession) bool {
 }
 
 // applyNewAPIAuth 把当前 session 的鉴权头挂到 resty 请求上。
-//   - 优先 Cookie（浏览器 session）；
-//   - 没填 Cookie 但填了 AccessToken 时改走 Authorization: <token>，对应 NewAPI 的系统访问令牌；
+//   - 优先 AccessToken，兼容新版 dashboard 登录 token 和系统访问令牌；
+//   - 没填 AccessToken 时回退到旧版浏览器 session Cookie；
 //   - New-Api-User 始终带上（NewAPI 即便用 session 也要求这个头）。
 func applyNewAPIAuth(req *resty.Request, session *connector.AuthSession) {
 	if session == nil {
 		return
 	}
-	if strings.TrimSpace(session.Cookie) != "" {
-		req.SetHeader("Cookie", session.Cookie)
-	} else if token := strings.TrimSpace(session.AccessToken); token != "" {
+	if token := strings.TrimSpace(session.AccessToken); token != "" {
 		// NewAPI middleware 会自动去掉 "Bearer " 前缀，这里直接给裸 token，行为最贴近 dashboard。
 		req.SetHeader("Authorization", token)
+	} else if strings.TrimSpace(session.Cookie) != "" {
+		req.SetHeader("Cookie", session.Cookie)
 	}
 	if strings.TrimSpace(session.UserID) != "" {
 		req.SetHeader("New-Api-User", session.UserID)
@@ -948,6 +1027,15 @@ func joinCookies(cookies []*http.Cookie) string {
 		parts = append(parts, c.Name+"="+c.Value)
 	}
 	return strings.Join(parts, "; ")
+}
+
+func cookieValue(cookies []*http.Cookie, name string) string {
+	for _, cookie := range cookies {
+		if cookie.Name == name {
+			return cookie.Value
+		}
+	}
+	return ""
 }
 
 func parseAnnouncementTime(values ...string) *time.Time {

@@ -65,6 +65,78 @@ func TestLoginAddsExtraParams(t *testing.T) {
 	}
 }
 
+func TestLoginSupportsNewAuthBundle(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/user/login", func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "new_api_refresh", Value: "refresh-1", Path: "/api/user/auth"})
+		_, _ = w.Write([]byte(`{"success":true,"message":"","data":{"access_token":"access-1","access_expires_at":4102444800,"user":{"id":19}}}`))
+	})
+	mux.HandleFunc("/api/user/self", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "access-1" {
+			t.Fatalf("authorization = %q", got)
+		}
+		if got := r.Header.Get("Cookie"); got != "" {
+			t.Fatalf("cookie should not be used for dashboard authentication: %q", got)
+		}
+		if got := r.Header.Get("New-Api-User"); got != "19" {
+			t.Fatalf("user header = %q", got)
+		}
+		_, _ = w.Write([]byte(`{"success":true,"message":"","data":{"id":19}}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New()
+	session, err := c.Login(context.Background(), &connector.AccountTarget{
+		BaseURL:  srv.URL,
+		Username: "u",
+		Password: "p",
+	})
+	if err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	if session.UserID != "19" || session.AccessToken != "access-1" || session.RefreshToken != "refresh-1" {
+		t.Fatalf("session = %#v", session)
+	}
+	if got := session.ExpiresAt.Unix(); got != 4102444800 {
+		t.Fatalf("expires_at = %d", got)
+	}
+	if err := c.CheckAuth(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, session); err != nil {
+		t.Fatalf("CheckAuth: %v", err)
+	}
+}
+
+func TestRefreshSessionSupportsNewAuthBundle(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/user/auth/refresh", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Origin"); got == "" {
+			t.Fatal("missing Origin header")
+		}
+		if got := r.Header.Get("Cookie"); got != "new_api_refresh=refresh-1" {
+			t.Fatalf("cookie = %q", got)
+		}
+		http.SetCookie(w, &http.Cookie{Name: "new_api_refresh", Value: "refresh-2", Path: "/api/user/auth"})
+		_, _ = w.Write([]byte(`{"success":true,"message":"","data":{"access_token":"access-2","access_expires_at":4102444800,"user":{"id":19}}}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	refreshed, err := New().RefreshSession(context.Background(), &connector.AccountTarget{BaseURL: srv.URL}, &connector.AuthSession{
+		UserID:       "19",
+		AccessToken:  "access-1",
+		RefreshToken: "refresh-1",
+	})
+	if err != nil {
+		t.Fatalf("RefreshSession: %v", err)
+	}
+	if refreshed.UserID != "19" || refreshed.AccessToken != "access-2" || refreshed.RefreshToken != "refresh-2" {
+		t.Fatalf("session = %#v", refreshed)
+	}
+	if got := refreshed.ExpiresAt.Unix(); got != 4102444800 {
+		t.Fatalf("expires_at = %d", got)
+	}
+}
+
 func TestGetCosts(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
